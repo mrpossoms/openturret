@@ -2,7 +2,7 @@ CC=avr-gcc
 TARGET=attiny24
 
 all:
-	$(CC) -mmcu=$(TARGET) main.c -o ot.hex
+	$(CC) -mmcu=$(TARGET) main.c spi.c -o ot.hex
 
 .PHONY: flash
 flash: all
