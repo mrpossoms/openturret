@@ -14,9 +14,13 @@
 #define DD_MOSI 2
 #define DD_SCK 1
 
+typedef enum {
+	OT_PORTA,
+	OT_PORTB,
+} port_t;
 
 typedef struct {
-	int port;
+	port_t port;
 	int coil_pins[2][2];
 	int coil_pin_cfg[2][2];
 } stepper_t;
@@ -60,7 +64,15 @@ void stepper_step(const stepper_t* m)
 	{
 		for (int j = 0; j < 2; ++j)
 		{
-			gpio_set(m->port, m->coil_pin_cfg[i % 2][j], signals[i][j]);
+			switch (m->port)
+			{
+				case OT_PORTA:
+					gpio_set(PORTA, m->coil_pin_cfg[i % 2][j], signals[i][j]);
+					break;
+				case OT_PORTB:
+					gpio_set(PORTB, m->coil_pin_cfg[i % 2][j], signals[i][j]);
+					break;
+			}
 		}
 	}
 }
