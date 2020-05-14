@@ -4,7 +4,8 @@
  * Created: 1/23/2020 10:04:20 PM
  * Author : Kirk Roerig
  */ 
-//#define F_CPU 16000000
+//#define F_CPU 8000000
+#define F_CPU 1000000
 
 #include <avr/io.h>
 #include <util/delay.h>
@@ -74,6 +75,8 @@ void stepper_step(const stepper_t* m)
 					break;
 			}
 		}
+
+		_delay_ms(3);
 	}
 }
 
@@ -81,34 +84,53 @@ void stepper_step(const stepper_t* m)
 int main(void)
 {
 	stepper_t yaw = {
-		.port = PORTA,
+		.port = OT_PORTA,
+		.coil_pins = {
+			{ 3, 2 },
+			{ 1, 0 },
+		},
 	};
 
 	stepper_t pitch = {
-		.port = PORTB,
+		.port = OT_PORTB,
+		.coil_pins = {
+			{ 7, 6 },
+			{ 1, 2 },
+		},
 	};
 	
 	stepper_t* steppers[2] = { &yaw, &pitch };
 
 	// Setup pin directionality
-	for (int si = 0; si < sizeof(steppers) / sizeof(stepper_t); ++si)
+	for (int si = 0; si < sizeof(steppers) / sizeof(stepper_t*); ++si)
 	{
 		int ddr = 0;
 		for (int ci = 2; ci--;)
 		for (int pi = 2; pi--;)
 		{
-			ddr &= (1 << steppers[si]->coil_pins[ci][pi]);
+			ddr |= (1 << steppers[si]->coil_pins[ci][pi]);
 		}
 
-		if (PORTA == steppers[si]->port) { DDRA &= ddr; }
-		if (PORTB == steppers[si]->port) { DDRB &= ddr; }
+		if (OT_PORTA == steppers[si]->port) { DDRA |= ddr; }
+		if (OT_PORTB == steppers[si]->port) { DDRB |= ddr; }
+	}
+
+	for (int i = 25; i--;)
+	{
+		//if (i % 2) PORTA |= (1 << 3);
+		//else       PORTA &= ~(1 << 3); 
+		gpio_set(PORTA, 3, i % 2);
+		_delay_ms(50);
 	}
 
 	// main loop
-	while (1)
+	for (int i = 100; i--;)
 	{
-
+		stepper_dir(&yaw, 1);
+		stepper_step(&yaw);
 	}
+
+	PORTA = 0;
 
 	return 0;
 }
