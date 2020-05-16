@@ -1,0 +1,3 @@
+[submodule "firmware/avr-usi-spi"]
+	path = firmware/avr-usi-spi
+	url = https://github.com/tessel/avr-usi-spi

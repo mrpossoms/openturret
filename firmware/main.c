@@ -10,6 +10,7 @@
 #include <avr/io.h>
 #include <util/delay.h>
 #include <math.h>
+#include "avr-usi-spi/spi_via_usi_driver.c" 
 
 #define DDR_SPI DDRB
 #define DD_MOSI 2
