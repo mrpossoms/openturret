@@ -126,7 +126,7 @@ int main(void)
 	// main loop
 	for (int i = 100; i--;)
 	{
-		stepper_dir(&yaw, 1);
+		stepper_dir(&yaw, -1);
 		stepper_step(&yaw);
 	}
 
