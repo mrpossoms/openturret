@@ -23,8 +23,12 @@ typedef enum {
 
 typedef struct {
 	port_t port;
-	int coil_pins[2][2];
-	int coil_pin_cfg[2][2];
+	int num;
+} pin_t;
+
+typedef struct {
+	pin_t coil_pins[2][2];
+	pin_t coil_pin_cfg[2][2];
 } stepper_t;
 
 
@@ -66,13 +70,15 @@ void stepper_step(const stepper_t* m)
 	{
 		for (int j = 0; j < 2; ++j)
 		{
-			switch (m->port)
+			pin_t pin = m->coil_pin_cfg[i % 2][j];
+
+			switch (pin.port)
 			{
 				case OT_PORTA:
-					gpio_set(PORTA, m->coil_pin_cfg[i % 2][j], signals[i][j]);
+					gpio_set(PORTA, pin.num, signals[i][j]);
 					break;
 				case OT_PORTB:
-					gpio_set(PORTB, m->coil_pin_cfg[i % 2][j], signals[i][j]);
+					gpio_set(PORTB, pin.num, signals[i][j]);
 					break;
 			}
 		}
@@ -85,18 +91,16 @@ void stepper_step(const stepper_t* m)
 int main(void)
 {
 	stepper_t yaw = {
-		.port = OT_PORTA,
 		.coil_pins = {
-			{ 3, 2 },
-			{ 1, 0 },
+			{ { OT_PORTA, 3 }, { OT_PORTA, 2 } },
+			{ { OT_PORTA, 1 }, { OT_PORTA, 0 } },
 		},
 	};
 
 	stepper_t pitch = {
-		.port = OT_PORTB,
 		.coil_pins = {
-			{ 7, 6 },
-			{ 1, 2 },
+			{ { OT_PORTB, 0 }, { OT_PORTB, 1 } },
+			{ { OT_PORTB, 2 }, { OT_PORTA, 7 } },
 		},
 	};
 	
@@ -105,33 +109,41 @@ int main(void)
 	// Setup pin directionality
 	for (int si = 0; si < sizeof(steppers) / sizeof(stepper_t*); ++si)
 	{
-		int ddr = 0;
 		for (int ci = 2; ci--;)
 		for (int pi = 2; pi--;)
 		{
-			ddr |= (1 << steppers[si]->coil_pins[ci][pi]);
+			pin_t pin = steppers[si]->coil_pins[ci][pi];
+			if (OT_PORTA == pin.port) { DDRA |= (1 << pin.num); }
+			if (OT_PORTB == pin.port) { DDRB |= (1 << pin.num); }
 		}
-
-		if (OT_PORTA == steppers[si]->port) { DDRA |= ddr; }
-		if (OT_PORTB == steppers[si]->port) { DDRB |= ddr; }
-	}
-
-	for (int i = 25; i--;)
-	{
-		//if (i % 2) PORTA |= (1 << 3);
-		//else       PORTA &= ~(1 << 3); 
-		gpio_set(PORTA, 3, i % 2);
-		_delay_ms(50);
 	}
 
 	// main loop
-	for (int i = 100; i--;)
+	for (int i = 50; i--;)
 	{
 		stepper_dir(&yaw, -1);
+		stepper_dir(&pitch, -1);
 		stepper_step(&yaw);
+
+		if (i < 25)
+		{
+			stepper_step(&pitch);
+		}
 	}
 
+	for (int i = 50; i--;)
+	{
+		stepper_dir(&yaw, 1);
+		stepper_dir(&pitch, 1);
+		stepper_step(&yaw);
+
+		if (i < 25)
+		{
+			stepper_step(&pitch);
+		}
+	}
 	PORTA = 0;
+	PORTB = 0;
 
 	return 0;
 }
