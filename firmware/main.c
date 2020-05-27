@@ -105,6 +105,7 @@ int main(void)
 	};
 	
 	stepper_t* steppers[2] = { &yaw, &pitch };
+	int8_t step_deltas[2] = {};
 
 	// Setup pin directionality
 	for (int si = 0; si < sizeof(steppers) / sizeof(stepper_t*); ++si)
@@ -118,19 +119,40 @@ int main(void)
 		}
 	}
 
-	// main loop
-	for (int i = 50; i--;)
-	{
-		stepper_dir(&yaw, -1);
-		stepper_dir(&pitch, -1);
-		stepper_step(&yaw);
 
-		if (i < 25)
+	// initalize usi spi
+	spiX_initslave(1);
+
+	// main loop
+	for (;;)
+	{
+		if (spiX_status.transferComplete)
 		{
-			stepper_step(&pitch);
+			// Step deltas are sent to us as a signle byte, where the high 4 bits
+			// control the yaw, and the low 4 control the pitch. The most significant
+			// bit for each group of 4 is a signed bit indicating direction.
+			char ctrl_byte = spiX_get();
+			int8_t yaw = ctrl_byte >> 4;
+			int8_t pitch = ctrl_byte & 0x0F;
+
+			step_deltas[0] += (yaw >> 3) > 0 ? (yaw & 0x7) : -(yaw & 0x7);
+			step_deltas[1] += (pitch >> 3) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
+
+			spiX_status.transferComplete = 0;
+		}
+
+		for (int i = sizeof(steppers) / sizeof(stepper_t*); i--;)
+		{
+			stepper_dir(steppers[i], step_deltas[i]);
+			
+			if (step_deltas[i]) { stepper_step(steppers[i]); }
+
+			if (step_deltas[i] > 0) { step_deltas[i]--; }
+			else if (step_deltas[i] < 0) { step_deltas[i]++; }
 		}
 	}
 
+/*
 	for (int i = 50; i--;)
 	{
 		stepper_dir(&yaw, 1);
@@ -142,6 +164,7 @@ int main(void)
 			stepper_step(&pitch);
 		}
 	}
+*/
 	PORTA = 0;
 	PORTB = 0;
 
