@@ -7,14 +7,18 @@
 //#define F_CPU 8000000
 #define F_CPU 1000000
 
+#include <avr/interrupt.h>
 #include <avr/io.h>
 #include <util/delay.h>
 #include <math.h>
-#include "avr-usi-spi/spi_via_usi_driver.c" 
 
-#define DDR_SPI DDRB
-#define DD_MOSI 2
-#define DD_SCK 1
+#define USI_OUT_REG	PORTA	//!< USI port output register.
+#define USI_IN_REG	PINA	//!< USI port input register.
+#define USI_DIR_REG	DDRA	//!< USI port direction register.
+#define USI_CLOCK_PIN	PA4	//!< USI clock I/O pin.
+#define USI_DATAIN_PIN	PA6	//!< USI data input pin.
+#define USI_DATAOUT_PIN	PA5	//!< USI data output pin.
+
 
 typedef enum {
 	OT_PORTA,
@@ -87,6 +91,22 @@ void stepper_step(const stepper_t* m)
 	}
 }
 
+volatile int8_t step_deltas[2] = {};
+
+ISR(USI_OVF_vect)
+{
+	cli();
+	// fetch the yaw and pitch parts of the USIDR which
+	// contains the byte recieved via SPI (USI)
+	int8_t yaw = USIDR >> 4;
+	int8_t pitch = USIDR & 0x0F;
+
+	step_deltas[0] += (yaw >> 3) > 0 ? (yaw & 0x7) : -(yaw & 0x7);
+	step_deltas[1] += (pitch >> 3) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
+
+	USISR |= _BV(USIOIF);
+	sei();
+}
 
 int main(void)
 {
@@ -105,7 +125,7 @@ int main(void)
 	};
 	
 	stepper_t* steppers[2] = { &yaw, &pitch };
-	int8_t step_deltas[2] = {};
+
 
 	// Setup pin directionality
 	for (int si = 0; si < sizeof(steppers) / sizeof(stepper_t*); ++si)
@@ -119,28 +139,21 @@ int main(void)
 		}
 	}
 
+	// Configure port directions.
+	const int spi_mode = 1;
 
-	// initalize usi spi
-	spiX_initslave(1);
+	USI_DIR_REG |= (1<<USI_DATAOUT_PIN);                      // Outputs.
+	USI_DIR_REG &= ~((1<<USI_DATAIN_PIN) | (1<<USI_CLOCK_PIN)); // Inputs.
+	USI_OUT_REG |= (1<<USI_DATAIN_PIN) | (1<<USI_CLOCK_PIN);  // Pull-ups.
+
+	USICR = (1<<USIOIE) | (1<<USIWM0) |
+	        (1<<USICS1) | (spi_mode<<USICS0);
+
+	sei();
 
 	// main loop
-	for (;;)
+	for (unsigned int t = 0; 1;)
 	{
-		if (spiX_status.transferComplete)
-		{
-			// Step deltas are sent to us as a signle byte, where the high 4 bits
-			// control the yaw, and the low 4 control the pitch. The most significant
-			// bit for each group of 4 is a signed bit indicating direction.
-			char ctrl_byte = spiX_get();
-			int8_t yaw = ctrl_byte >> 4;
-			int8_t pitch = ctrl_byte & 0x0F;
-
-			step_deltas[0] += (yaw >> 3) > 0 ? (yaw & 0x7) : -(yaw & 0x7);
-			step_deltas[1] += (pitch >> 3) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
-
-			spiX_status.transferComplete = 0;
-		}
-
 		for (int i = sizeof(steppers) / sizeof(stepper_t*); i--;)
 		{
 			stepper_dir(steppers[i], step_deltas[i]);

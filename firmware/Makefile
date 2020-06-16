@@ -1,6 +1,7 @@
 CC=avr-gcc
 TARGET=attiny84
 CFLAGS+=-O1
+LDFLAGS+=-mmcu $(TARGET)
 
 all:
 	$(CC) $(CFLAGS) -mmcu=$(TARGET) main.c spi.c -o ot.hex
