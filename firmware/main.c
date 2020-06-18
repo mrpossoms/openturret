@@ -95,17 +95,18 @@ volatile int8_t step_deltas[2] = {};
 
 ISR(USI_OVF_vect)
 {
-	cli();
 	// fetch the yaw and pitch parts of the USIDR which
 	// contains the byte recieved via SPI (USI)
-	int8_t yaw = USIDR >> 4;
-	int8_t pitch = USIDR & 0x0F;
+	int8_t ctrl = USIBR;
+	int8_t yaw = (ctrl >> 4) & 0xF;
+	int8_t pitch = ctrl & 0x0F;
 
-	step_deltas[0] += (yaw >> 3) > 0 ? (yaw & 0x7) : -(yaw & 0x7);
-	step_deltas[1] += (pitch >> 3) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
+	step_deltas[0] += (yaw & 0x08) > 0 ? (yaw & 0x7) : -(yaw & 0x7);
+	step_deltas[1] += (pitch & 0x08) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
 
 	USISR |= _BV(USIOIF);
-	sei();
+	// USIBR = 0;
+	// sei();
 }
 
 int main(void)
@@ -156,12 +157,16 @@ int main(void)
 	{
 		for (int i = sizeof(steppers) / sizeof(stepper_t*); i--;)
 		{
-			stepper_dir(steppers[i], step_deltas[i]);
-			
-			if (step_deltas[i]) { stepper_step(steppers[i]); }
+			if (step_deltas[i])
+			{
+				stepper_dir(steppers[i], step_deltas[i]);
+				stepper_step(steppers[i]);
+			}
 
+			//cli();
 			if (step_deltas[i] > 0) { step_deltas[i]--; }
 			else if (step_deltas[i] < 0) { step_deltas[i]++; }
+			//sei();
 		}
 	}
 
