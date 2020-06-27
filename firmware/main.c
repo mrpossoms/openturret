@@ -97,7 +97,7 @@ ISR(USI_OVF_vect)
 {
 	// fetch the yaw and pitch parts of the USIDR which
 	// contains the byte recieved via SPI (USI)
-	int8_t ctrl = USIBR;
+	int8_t ctrl = USIDR;
 	int8_t yaw = (ctrl >> 4) & 0xF;
 	int8_t pitch = ctrl & 0x0F;
 
@@ -105,8 +105,7 @@ ISR(USI_OVF_vect)
 	step_deltas[1] += (pitch & 0x08) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
 
 	USISR |= _BV(USIOIF);
-	// USIBR = 0;
-	// sei();
+	USISR &= 0xF0;
 }
 
 int main(void)
@@ -141,7 +140,7 @@ int main(void)
 	}
 
 	// Configure port directions.
-	const int spi_mode = 1;
+	const int spi_mode = 0;
 
 	USI_DIR_REG |= (1<<USI_DATAOUT_PIN);                      // Outputs.
 	USI_DIR_REG &= ~((1<<USI_DATAIN_PIN) | (1<<USI_CLOCK_PIN)); // Inputs.
@@ -151,6 +150,8 @@ int main(void)
 	        (1<<USICS1) | (spi_mode<<USICS0);
 
 	sei();
+	USISR |= _BV(USIOIF);
+	USISR &= 0xF0;
 
 	// main loop
 	for (unsigned int t = 0; 1;)
@@ -162,11 +163,10 @@ int main(void)
 				stepper_dir(steppers[i], step_deltas[i]);
 				stepper_step(steppers[i]);
 			}
-
-			//cli();
+			
 			if (step_deltas[i] > 0) { step_deltas[i]--; }
 			else if (step_deltas[i] < 0) { step_deltas[i]++; }
-			//sei();
+			
 		}
 	}
 
