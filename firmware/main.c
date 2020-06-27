@@ -156,6 +156,7 @@ int main(void)
 	// main loop
 	for (unsigned int t = 0; 1;)
 	{
+		cli();
 		for (int i = sizeof(steppers) / sizeof(stepper_t*); i--;)
 		{
 			if (step_deltas[i])
@@ -168,6 +169,7 @@ int main(void)
 			else if (step_deltas[i] < 0) { step_deltas[i]++; }
 			
 		}
+		sei();
 	}
 
 /*
