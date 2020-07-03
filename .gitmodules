@@ -1,3 +1,6 @@
 [submodule "firmware/avr-usi-spi"]
 	path = firmware/avr-usi-spi
 	url = https://github.com/tessel/avr-usi-spi
+[submodule "app/deps/vidi.h"]
+	path = app/deps/vidi.h
+	url = git@github.com:mrpossoms/vidi.h.git
