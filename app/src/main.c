@@ -130,8 +130,10 @@ int main (int argc, const char* argv[])
 	char display[32][128] = {};
 
 	int rows_drawn = 0;
-	int targ_x = 0;
-	int targ_y = 0;
+	int targ_x = 64;
+	int targ_y = 16;
+	int frame_wait = 4;
+	int frame_count = 0;
 
 	fputs("\033[?25l", stderr);
 
@@ -159,6 +161,8 @@ int main (int argc, const char* argv[])
 		int com_points = 0;
 		const int dr = 480 / 32;
 		const int dc = 640 / 128;
+
+		if (frame_count > 0)
 		for (int r = 0; r < 32; r++)
 		{
 			for (int c = 0; c < 128; c++)
@@ -180,7 +184,7 @@ int main (int argc, const char* argv[])
 			}
 		}
 
-		if (com_points > 0)
+		if (com_points > 1)
 		{
 			int x = com_x / com_points;
 			int y = com_y / com_points;
@@ -198,19 +202,27 @@ int main (int argc, const char* argv[])
 			rows_drawn = 0;
 		}
 
-		int yaw = targ_x - 64;
-		int pitch = targ_y - 16;
-		uint8_t ctrl_byte = 0;
+		if (com_points > 0 && frame_wait <= 0)
+		{
+			int yaw = (targ_x - 64) / 10;
+			int pitch = (targ_y - 16) / 10;
+			uint8_t ctrl_byte = 0;
 
-		if (yaw < 0) { ctrl_byte |= 0x80; }
-		yaw = min(abs(yaw), 7);
+			if (yaw < 0) { ctrl_byte |= 0x80; }
+			yaw = min(abs(yaw), 1);
 
-		if (pitch < 0) { ctrl_byte |= 0x08; }
-		pitch = min(abs(pitch), 7);
+			if (pitch < 0) { ctrl_byte |= 0x08; }
+			pitch = min(abs(pitch), 1);
 
-		ctrl_byte |= ((yaw << 4) | pitch);
+			ctrl_byte |= ((yaw << 4) | pitch);
 
-		transfer_spi(spi_fd, ctrl_byte);
+			transfer_spi(spi_fd, ctrl_byte);
+
+			frame_wait = 10;
+		}
+
+		frame_wait--;
+		frame_count++;
 
 		// display
 		for (int r = 0; r < 32; r++)
