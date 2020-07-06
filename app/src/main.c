@@ -9,8 +9,10 @@
 #include "vidi.h"
 
 #define CAM_FOV 30
-
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define DEG_ROW 1
+#define DEG_COL 1
+#define DEG_PITCH_STEP 1
+#define DEG_YAW_STEP 1
 
 static uint8_t mode = 0;
 static uint8_t bits = 8;
@@ -82,20 +84,18 @@ static void transfer_spi(int fd, uint8_t ctrl)
 {
 	int ret;
 	
-	uint8_t tx[] = { ctrl };
-	uint8_t rx[ARRAY_SIZE(tx)] = {0, };
+	uint8_t tx[1] = { ctrl };
+	uint8_t rx[1] = {0, };
 	struct spi_ioc_transfer tr = {
 		.tx_buf = (unsigned long)tx,
 		.rx_buf = (unsigned long)rx,
-		.len = ARRAY_SIZE(tx),
+		.len = 1,
 		.delay_usecs = 0,
 		.speed_hz = speed,
 		.bits_per_word = bits,
 	};
 
 	ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
-	// if (ret < 1)
-	// 	pabort("can't send spi message");
 }
 
 
@@ -112,6 +112,11 @@ int max(int a, int b)
 	return b; 
 }
 
+
+int clamp(int x, int lo, int hi)
+{
+	return min(hi, max(lo, x));
+}
 
 int main (int argc, const char* argv[])
 {
@@ -143,8 +148,8 @@ int main (int argc, const char* argv[])
 	char display[32][128] = {};
 
 	int rows_drawn = 0;
-	int targ_x = 64;
-	int targ_y = 16;
+	float targ_x = 64;
+	float targ_y = 16;
 	int frame_wait = 4;
 	int frame_count = 0;
 
@@ -170,7 +175,9 @@ int main (int argc, const char* argv[])
 		const char spectrum[] = "  .,':;|[{+*x88";
 
 		// process
-		int com_x = 0, com_y = 0;
+		//float com_x = 64, com_y = 16;
+		//int com_points = 1;
+		float com_x = 0, com_y = 0;
 		int com_points = 0;
 		const int dr = 480 / 32;
 		const int dc = 640 / 128;
@@ -185,11 +192,12 @@ int main (int argc, const char* argv[])
 				int grey = frame[ri][ci].Y;
 				int delta = abs(grey-last_grey);
 
-				int idx = max(delta - 16, 0) / 18;
-				//int idx = grey / 18;
-				display[r][c] = spectrum[idx];
+				int delta_idx = max(delta - 8, 0) / 18;
+				int idx = grey / 18;
+				display[r][c] = spectrum[delta_idx];//spectrum[max(0, idx - delta_idx)];;
 
-				if (idx >= 2)
+				if (frame_wait <= 0)
+				if (delta_idx >= 2)
 				{
 					com_x += c;
 					com_y += r;
@@ -198,16 +206,17 @@ int main (int argc, const char* argv[])
 			}
 		}
 
-		if (com_points > 1)
+		if (com_points > 0 && frame_wait <= 0)
 		{
-			int x = com_x / com_points;
-			int y = com_y / com_points;
+			float x = com_x / com_points;
+			float y = com_y / com_points;
 
-			targ_x = (x + targ_x * 4) / 5;
-			targ_y = (y + targ_y * 4) / 5;			
+			const float power = 5;
+			targ_x = (x + targ_x * (power - 1.f)) / power;
+			targ_y = (y + targ_y * (power - 1.f)) / power;			
 		}
 
-		display[targ_y][targ_x] = '#';
+		display[(int)targ_y][(int)targ_x] = '#';
 		display[16][64] = '+';
 
 		{ // Erase the previously drawn rows
@@ -217,27 +226,38 @@ int main (int argc, const char* argv[])
 			rows_drawn = 0;
 		}
 
-		int yaw = (targ_x - 64) / 10;
-		int pitch = (targ_y - 16) / 10;
-		if (com_points > 0 && frame_wait <= 0)
+		int yaw = -(targ_x - 64) / 10;
+		int pitch = -(targ_y - 16) / 5;
+		//if (com_points > 0 && frame_wait <= 0)
+		if (frame_wait <= 0)
 		{
-			uint8_t ctrl_byte = 0;
+			if (yaw && pitch)
+			{
+				targ_x = 64;
+				targ_y = 16;
+			}
 
-			if (yaw < 0) { ctrl_byte |= 0x80; }
-			int yaw_ticks = min(abs(yaw), 1);
+			do
+			{
+				uint8_t ctrl_byte = 0;
 
-			if (pitch < 0) { ctrl_byte |= 0x08; }
-			int pitch_ticks = min(abs(pitch), 1);
+				if (yaw < 0) { ctrl_byte |= 0x80; }
+				int yaw_ticks = clamp(yaw, -7, 7);
 
-			ctrl_byte |= ((yaw_ticks << 4) | pitch_ticks);
+				if (pitch < 0) { ctrl_byte |= 0x08; }
+				int pitch_ticks = clamp(pitch, -7, 7);
 
-			transfer_spi(spi_fd, ctrl_byte);
+				ctrl_byte |= ((abs(yaw_ticks) << 4) | abs(pitch_ticks));
 
-			frame_wait = 10;
+				transfer_spi(spi_fd, ctrl_byte);
+
+				frame_wait += max(pitch_ticks, yaw_ticks) * 5;
+				yaw -= yaw_ticks;
+				pitch -= pitch_ticks;
+
+			}
+			while(yaw != 0 || pitch != 0);
 		}
-
-		frame_wait--;
-		frame_count++;
 
 		// display
 		for (int r = 0; r < 32; r++)
@@ -252,10 +272,12 @@ int main (int argc, const char* argv[])
 		}
 
 		printf("COM points: %d   \n", com_points);
-		printf("COM (%d, %d)\n", targ_x, targ_y);
-		printf("yaw, pitch: (%d, %d)\n", yaw, pitch);
+		printf("COM (%d, %d)\n", (int)targ_x, (int)targ_y);
+		printf("yaw, pitch: (%d, %d) frames: %d\n", yaw, pitch, frame_count);
 		rows_drawn+=3;
 
+		frame_wait--;
+		frame_count++;
 		memcpy(last_frame, frame, sizeof(frame));
 	}
 
