@@ -25,6 +25,10 @@ typedef union {
 
 
 typedef struct {
+	uint8_t Y, UV;
+} pixel_t;
+
+typedef struct {
 	size_t width, height;
 	rgb_t* buf;
 } frame_t;
@@ -102,6 +106,13 @@ int min(int a, int b)
 }
 
 
+int max(int a, int b)
+{
+	if (a > b) { return a; }
+	return b; 
+}
+
+
 int main (int argc, const char* argv[])
 {
 	// define a configuration object for a camera, here
@@ -111,7 +122,8 @@ int main (int argc, const char* argv[])
 		.width = 640,
 		.height = 480,
 		.frames_per_sec = 60,
-		.path = argv[1]
+		.path = argv[1],
+		.pixel_format = V4L2_PIX_FMT_YUYV
 	};
 
 	// vidi_config is used to open and configure the camera
@@ -121,17 +133,20 @@ int main (int argc, const char* argv[])
 
 	int spi_fd = open("/dev/spidev0.0", O_RDWR);
 
-	assert(spi_fd >= 0);
+	if (spi_fd >= 0)
+	{
+		config_spi(spi_fd);
+	}
 
-	config_spi(spi_fd);
-	
-	rgb_t last_frame[480][640] = {};
-	rgb_t frame[480][640] = {};
+	pixel_t last_frame[480][640] = {};
+	pixel_t frame[480][640] = {};
 	char display[32][128] = {};
 
 	int rows_drawn = 0;
-	int targ_x = 0;
-	int targ_y = 0;
+	int targ_x = 64;
+	int targ_y = 16;
+	int frame_wait = 4;
+	int frame_count = 0;
 
 	fputs("\033[?25l", stderr);
 
@@ -159,16 +174,19 @@ int main (int argc, const char* argv[])
 		int com_points = 0;
 		const int dr = 480 / 32;
 		const int dc = 640 / 128;
+
+		if (frame_count > 0)
 		for (int r = 0; r < 32; r++)
 		{
 			for (int c = 0; c < 128; c++)
 			{
 				int ri = r * dr, ci = c * dc;
-				int last_grey = (last_frame[ri][ci].r + last_frame[ri][ci].g + last_frame[ri][ci].b) / 3;
-				int grey = (frame[ri][ci].r + frame[ri][ci].g + frame[ri][ci].b) / 3;
+				int last_grey = last_frame[ri][ci].Y;//(last_frame[ri][ci].r + last_frame[ri][ci].g + last_frame[ri][ci].b) / 3;
+				int grey = frame[ri][ci].Y;
 				int delta = abs(grey-last_grey);
 
-				int idx = delta / 18;
+				int idx = max(delta - 16, 0) / 18;
+				//int idx = grey / 18;
 				display[r][c] = spectrum[idx];
 
 				if (idx >= 2)
@@ -180,7 +198,7 @@ int main (int argc, const char* argv[])
 			}
 		}
 
-		if (com_points > 0)
+		if (com_points > 1)
 		{
 			int x = com_x / com_points;
 			int y = com_y / com_points;
@@ -190,6 +208,7 @@ int main (int argc, const char* argv[])
 		}
 
 		display[targ_y][targ_x] = '#';
+		display[16][64] = '+';
 
 		{ // Erase the previously drawn rows
 			static char move_up[16] = {};
@@ -198,19 +217,27 @@ int main (int argc, const char* argv[])
 			rows_drawn = 0;
 		}
 
-		int yaw = targ_x - 64;
-		int pitch = targ_y - 16;
-		uint8_t ctrl_byte = 0;
+		int yaw = (targ_x - 64) / 10;
+		int pitch = (targ_y - 16) / 10;
+		if (com_points > 0 && frame_wait <= 0)
+		{
+			uint8_t ctrl_byte = 0;
 
-		if (yaw < 0) { ctrl_byte |= 0x80; }
-		yaw = min(abs(yaw), 7);
+			if (yaw < 0) { ctrl_byte |= 0x80; }
+			int yaw_ticks = min(abs(yaw), 1);
 
-		if (pitch < 0) { ctrl_byte |= 0x08; }
-		pitch = min(abs(pitch), 7);
+			if (pitch < 0) { ctrl_byte |= 0x08; }
+			int pitch_ticks = min(abs(pitch), 1);
 
-		ctrl_byte |= ((yaw << 4) | pitch);
+			ctrl_byte |= ((yaw_ticks << 4) | pitch_ticks);
 
-		transfer_spi(spi_fd, ctrl_byte);
+			transfer_spi(spi_fd, ctrl_byte);
+
+			frame_wait = 10;
+		}
+
+		frame_wait--;
+		frame_count++;
 
 		// display
 		for (int r = 0; r < 32; r++)
@@ -219,13 +246,15 @@ int main (int argc, const char* argv[])
 			{
 				fputc(display[r][c], stderr);
 			}
+			fputc('|', stderr);
 			fputc('\n', stderr);
 			rows_drawn += 1;
 		}
 
 		printf("COM points: %d   \n", com_points);
 		printf("COM (%d, %d)\n", targ_x, targ_y);
-		rows_drawn+=2;
+		printf("yaw, pitch: (%d, %d)\n", yaw, pitch);
+		rows_drawn+=3;
 
 		memcpy(last_frame, frame, sizeof(frame));
 	}

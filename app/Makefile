@@ -2,7 +2,7 @@ TARG=$(shell gcc -dumpmachine)
 
 SRCS=$(wildcard src/*.c)
 OBJS=$(patsubst %.c,%.c.o,$(SRCS))
-# CFLAGS+=-O1
+CFLAGS+=-g
 INC=-Ideps/vidi.h/inc
 
 bin/$(TARG):
@@ -17,3 +17,9 @@ bin/$(TARG)/tracker: $(OBJS)
 
 all: bin/$(TARG)/tracker
 	@echo "Built tracker"
+
+
+.PHONY: clean
+clean: 
+	rm src/*.o
+	rm -rf bin
