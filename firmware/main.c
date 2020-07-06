@@ -42,6 +42,28 @@ typedef struct {
 } \
 
 
+void stepper_disable(stepper_t* m)
+{
+	for (int i = 0; i < 4; ++i)
+	{
+		for (int j = 0; j < 2; ++j)
+		{
+			pin_t pin = m->coil_pin_cfg[i % 2][j];
+
+			switch (pin.port)
+			{
+				case OT_PORTA:
+					gpio_set(PORTA, pin.num, 0);
+					break;
+				case OT_PORTB:
+					gpio_set(PORTB, pin.num, 0);
+					break;
+			}
+		}
+	}
+}
+
+
 void stepper_dir(stepper_t* m, int dir)
 {
 	if (dir < 0)
@@ -93,6 +115,20 @@ void stepper_step(const stepper_t* m)
 
 volatile int8_t step_deltas[2] = {};
 
+stepper_t yaw_stepper = {
+	.coil_pins = {
+		{ { OT_PORTA, 3 }, { OT_PORTA, 2 } },
+		{ { OT_PORTA, 1 }, { OT_PORTA, 0 } },
+	},
+};
+
+stepper_t pitch_stepper = {
+	.coil_pins = {
+		{ { OT_PORTB, 0 }, { OT_PORTB, 1 } },
+		{ { OT_PORTB, 2 }, { OT_PORTA, 7 } },
+	},
+};
+
 ISR(USI_OVF_vect)
 {
 	// fetch the yaw and pitch parts of the USIDR which
@@ -104,27 +140,19 @@ ISR(USI_OVF_vect)
 	step_deltas[0] += (yaw & 0x08) > 0 ? (yaw & 0x7) : -(yaw & 0x7);
 	step_deltas[1] += (pitch & 0x08) > 0 ? (pitch & 0x7) : -(pitch & 0x7);
 
+	if (0 == ctrl)
+	{
+		stepper_disable(&yaw_stepper);
+		stepper_disable(&pitch_stepper);
+	}
+
 	USISR |= _BV(USIOIF);
 	USISR &= 0xF0;
 }
 
 int main(void)
-{
-	stepper_t yaw = {
-		.coil_pins = {
-			{ { OT_PORTA, 3 }, { OT_PORTA, 2 } },
-			{ { OT_PORTA, 1 }, { OT_PORTA, 0 } },
-		},
-	};
-
-	stepper_t pitch = {
-		.coil_pins = {
-			{ { OT_PORTB, 0 }, { OT_PORTB, 1 } },
-			{ { OT_PORTB, 2 }, { OT_PORTA, 7 } },
-		},
-	};
-	
-	stepper_t* steppers[2] = { &yaw, &pitch };
+{	
+	stepper_t* steppers[2] = { &yaw_stepper, &pitch_stepper };
 
 
 	// Setup pin directionality
@@ -172,19 +200,6 @@ int main(void)
 		sei();
 	}
 
-/*
-	for (int i = 50; i--;)
-	{
-		stepper_dir(&yaw, 1);
-		stepper_dir(&pitch, 1);
-		stepper_step(&yaw);
-
-		if (i < 25)
-		{
-			stepper_step(&pitch);
-		}
-	}
-*/
 	PORTA = 0;
 	PORTB = 0;
 
