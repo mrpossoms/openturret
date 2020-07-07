@@ -4,8 +4,9 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <linux/types.h>
-#include <linux/spi/spidev.h>
 
+#include "spi.h"
+#include "utils.h"
 #include "vidi.h"
 
 #define CAM_FOV 30
@@ -13,10 +14,6 @@
 #define DEG_COL 1
 #define DEG_PITCH_STEP 1
 #define DEG_YAW_STEP 1
-
-static uint8_t mode = 0;
-static uint8_t bits = 8;
-static uint32_t speed = 1000;
 
 typedef union {
 	struct {
@@ -35,87 +32,115 @@ typedef struct {
 	rgb_t* buf;
 } frame_t;
 
+typedef struct {
+	float steps_per_row;
+	float steps_per_col;
+} cal_t;
 
-static void pabort(const char *s)
+
+uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
 {
-	perror(s);
-	abort();
+	uint8_t ctrl_byte = 0;
+
+	if (yaw < 0) { ctrl_byte |= 0x80; }
+	*yaw_ticks = clamp(yaw, -7, 7);
+
+	if (pitch < 0) { ctrl_byte |= 0x08; }
+	*pitch_ticks = clamp(pitch, -7, 7);
+
+	return ctrl_byte | ((abs(*yaw_ticks) << 4) | abs(*pitch_ticks));
 }
 
-
-void config_spi(int fd)
+void wait_frame(vidi_cfg_t* cam, pixel_t frame[480][640])
 {
-	/*
-	 * spi mode
-	 */
-	int ret = ioctl(fd, SPI_IOC_WR_MODE, &mode);
-	if (ret == -1)
-		pabort("can't set spi mode");
+	// this function blocks until a frame pointer is returned
+	uint8_t* raw_frame = vidi_wait_frame(cam);
+	size_t row_size = vidi_row_bytes(cam);
 
-	ret = ioctl(fd, SPI_IOC_RD_MODE, &mode);
-	if (ret == -1)
-		pabort("can't get spi mode");
-
-	/*
-	 * bits per word
-	 */
-	ret = ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits);
-	if (ret == -1)
-		pabort("can't set bits per word");
-
-	ret = ioctl(fd, SPI_IOC_RD_BITS_PER_WORD, &bits);
-	if (ret == -1)
-		pabort("can't get bits per word");
-
-	/*
-	 * max speed hz
-	 */
-	ret = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed);
-	if (ret == -1)
-		pabort("can't set max speed hz");
-
-	ret = ioctl(fd, SPI_IOC_RD_MAX_SPEED_HZ, &speed);
-	if (ret == -1)
-		pabort("can't get max speed hz");
+	for (int r = 0; r < 480; r++)
+	{
+		memcpy(frame[r], raw_frame + (r * row_size), row_size);
+	}
 }
 
-
-static void transfer_spi(int fd, uint8_t ctrl)
+cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 {
-	int ret;
-	
-	uint8_t tx[1] = { ctrl };
-	uint8_t rx[1] = {0, };
-	struct spi_ioc_transfer tr = {
-		.tx_buf = (unsigned long)tx,
-		.rx_buf = (unsigned long)rx,
-		.len = 1,
-		.delay_usecs = 0,
-		.speed_hz = speed,
-		.bits_per_word = bits,
-	};
+	cal_t cal = {};
+	pixel_t frame[480][640] = {};
+	uint8_t down_sampled[32][128] = {};
+	uint8_t feature[3][3] = {};
 
-	ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
-}
+	int best_row, best_col, best_score = 0xBEEF;
 
+	const int dr = 480 / 32;
+	const int dc = 640 / 128;
 
-int min(int a, int b)
-{
-	if (a < b) { return a; }
-	return b; 
-}
+	// let the video stream settle
+	for (int i = 15; i--;)
+	{
+		// request the camera to capture a frame
+		vidi_request_frame(cam);
+		wait_frame(cam, frame);
+	}
 
+	// downsample the frame
+	for (int r = 0; r < 32; r++)
+	for (int c = 0; c < 128; c++)
+	{
+		int ri = r * dr, ci = c * dc;
+		down_sampled[r][c] = frame[ri][ci].Y;
+	}
 
-int max(int a, int b)
-{
-	if (a > b) { return a; }
-	return b; 
-}
+	// store the feature
+	for (int r = -1; r <= 1; r++)
+	for (int c = -1; c <= 1; c++)
+	{
+		feature[r + 1][c + 1] = down_sampled[16 + r][64 + c];	
+	}
 
+	// move on the yaw and pitch axis
+	int pt, yt;
+	spi_transfer(spi_fd, control_byte(7, 7, &yt, &pt));
 
-int clamp(int x, int lo, int hi)
-{
-	return min(hi, max(lo, x));
+	// capture another frame (wait for a bit)
+	for (int i = 15; i--;)
+	{
+		// request the camera to capture a frame
+		vidi_request_frame(cam);
+		wait_frame(cam, frame);
+	}
+
+	// downsample the frame
+	for (int r = 0; r < 32; r++)
+	for (int c = 0; c < 128; c++)
+	{
+		int ri = r * dr, ci = c * dc;
+		down_sampled[r][c] = frame[ri][ci].Y;
+	}
+
+	// find the best feature
+	for (int r = 1; r < 31; r++)
+	for (int c = 1; c < 127; c++)
+	{
+		int score = 0;
+		for (int i = -1; i <= 1; i++)
+		for (int j = -1; j <= 1; j++)
+		{
+			score += feature[i + 1][j + 1] - down_sampled[r + i][c + j];
+		}
+
+		if (score < best_score)
+		{
+			best_row = r;
+			best_col = c;
+			best_score = score;
+		}
+	}
+
+	cal.steps_per_col = 7.f / (64.f - best_col);
+	cal.steps_per_row = 7.f / (16.f - best_row);
+
+	return cal;
 }
 
 int main (int argc, const char* argv[])
@@ -140,7 +165,7 @@ int main (int argc, const char* argv[])
 
 	if (spi_fd >= 0)
 	{
-		config_spi(spi_fd);
+		spi_config(spi_fd);
 	}
 
 	pixel_t last_frame[480][640] = {};
@@ -153,24 +178,18 @@ int main (int argc, const char* argv[])
 	int frame_wait = 4;
 	int frame_count = 0;
 
+
 	fputs("\033[?25l", stderr);
 
-	// request the camera to capture a frame
-	vidi_request_frame(&cam);
+	// cal_t cal = calibrate(&cam, spi_fd);
 
 	while (1)
 	{
-		// this function blocks until a frame pointer is returned
-		uint8_t* raw_frame = vidi_wait_frame(&cam);
-		size_t row_size = vidi_row_bytes(&cam);
+		wait_frame(&cam, frame);
 
 		// request the camera to capture a frame
 		vidi_request_frame(&cam);
 
-		for (int r = 0; r < 480; r++)
-		{
-			memcpy(frame[r], raw_frame + (r * row_size), row_size);
-		}
 
 		const char spectrum[] = "  .,':;|[{+*x88";
 
@@ -239,17 +258,8 @@ int main (int argc, const char* argv[])
 
 			do
 			{
-				uint8_t ctrl_byte = 0;
-
-				if (yaw < 0) { ctrl_byte |= 0x80; }
-				int yaw_ticks = clamp(yaw, -7, 7);
-
-				if (pitch < 0) { ctrl_byte |= 0x08; }
-				int pitch_ticks = clamp(pitch, -7, 7);
-
-				ctrl_byte |= ((abs(yaw_ticks) << 4) | abs(pitch_ticks));
-
-				transfer_spi(spi_fd, ctrl_byte);
+				int yaw_ticks, pitch_ticks;
+				spi_transfer(spi_fd, control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks));
 
 				frame_wait += max(pitch_ticks, yaw_ticks) * 5;
 				yaw -= yaw_ticks;
