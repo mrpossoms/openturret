@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <linux/types.h>
+#include <math.h>
 
 #include "spi.h"
 #include "utils.h"
@@ -65,23 +66,23 @@ void wait_frame(vidi_cfg_t* cam, pixel_t frame[480][640])
 
 cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 {
+	#define FSIZE 7
+	const int FSIZE_H = 3;
+
 	cal_t cal = {};
 	pixel_t frame[480][640] = {};
 	uint8_t down_sampled[32][128] = {};
-	uint8_t feature[3][3] = {};
+	uint8_t feature[FSIZE][FSIZE] = {};
+	const int motor_steps = 5;
 
-	int best_row, best_col, best_score = 0xBEEF;
+	int best_row, best_col, best_score = 100000000;
 
 	const int dr = 480 / 32;
 	const int dc = 640 / 128;
 
 	// let the video stream settle
-	for (int i = 15; i--;)
-	{
-		// request the camera to capture a frame
-		vidi_request_frame(cam);
-		wait_frame(cam, frame);
-	}
+	for (int i = 60; i--;)
+	{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
 	// downsample the frame
 	for (int r = 0; r < 32; r++)
@@ -92,18 +93,18 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	}
 
 	// store the feature
-	for (int r = -1; r <= 1; r++)
-	for (int c = -1; c <= 1; c++)
+	for (int r = -FSIZE_H; r <= FSIZE_H; r++)
+	for (int c = -FSIZE_H; c <= FSIZE_H; c++)
 	{
-		feature[r + 1][c + 1] = down_sampled[16 + r][64 + c];	
+		feature[r + FSIZE_H][c + FSIZE_H] = down_sampled[16 + r][64 + c];	
 	}
 
 	// move on the yaw and pitch axis
 	int pt, yt;
-	spi_transfer(spi_fd, control_byte(7, 7, &yt, &pt));
+	spi_transfer(spi_fd, control_byte(motor_steps, motor_steps, &yt, &pt));
 
 	// capture another frame (wait for a bit)
-	for (int i = 15; i--;)
+	for (int i = 60; i--;)
 	{
 		// request the camera to capture a frame
 		vidi_request_frame(cam);
@@ -119,14 +120,14 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	}
 
 	// find the best feature
-	for (int r = 1; r < 31; r++)
-	for (int c = 1; c < 127; c++)
+	for (int r = 10; r < 22; r++)
+	for (int c = 32; c < (128 - 32); c++)
 	{
 		int score = 0;
-		for (int i = -1; i <= 1; i++)
-		for (int j = -1; j <= 1; j++)
+		for (int i = -FSIZE_H; i <= FSIZE_H; i++)
+		for (int j = -FSIZE_H; j <= FSIZE_H; j++)
 		{
-			score += feature[i + 1][j + 1] - down_sampled[r + i][c + j];
+			score += abs(feature[i + FSIZE_H][j + FSIZE_H] - down_sampled[r + i][c + j]);
 		}
 
 		if (score < best_score)
@@ -137,8 +138,16 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		}
 	}
 
-	cal.steps_per_col = 7.f / (64.f - best_col);
-	cal.steps_per_row = 7.f / (16.f - best_row);
+	spi_transfer(spi_fd, control_byte(-motor_steps, -motor_steps, &yt, &pt));
+	fprintf(stderr, "best_score: %d, coord: (%d, %d)\n", best_score, best_row, best_col);
+
+	// let the video stream settle
+	for (int i = 60; i--;)
+	{ vidi_request_frame(cam); wait_frame(cam, frame); }
+
+
+	cal.steps_per_col = fabsf(motor_steps / (64.f - best_col));
+	cal.steps_per_row = fabsf(motor_steps / (16.f - best_row));
 
 	return cal;
 }
@@ -178,10 +187,13 @@ int main (int argc, const char* argv[])
 	int frame_wait = 4;
 	int frame_count = 0;
 
+	cal_t cal = calibrate(&cam, spi_fd);
+	spi_transfer(spi_fd, 0);
+	fprintf(stderr, "steps_per_row: %f, steps_per_col: %f\n", cal.steps_per_row, cal.steps_per_col);
+
 
 	fputs("\033[?25l", stderr);
-
-	// cal_t cal = calibrate(&cam, spi_fd);
+	vidi_request_frame(&cam);
 
 	while (1)
 	{
@@ -238,6 +250,7 @@ int main (int argc, const char* argv[])
 		display[(int)targ_y][(int)targ_x] = '#';
 		display[16][64] = '+';
 
+		if (rows_drawn > 0)
 		{ // Erase the previously drawn rows
 			static char move_up[16] = {};
 			sprintf(move_up, "\033[%dA", rows_drawn);
@@ -245,12 +258,13 @@ int main (int argc, const char* argv[])
 			rows_drawn = 0;
 		}
 
-		int yaw = -(targ_x - 64) / 10;
-		int pitch = -(targ_y - 16) / 5;
+		int yaw = -(targ_x - 64) * cal.steps_per_col;
+		int pitch = -(targ_y - 16) * cal.steps_per_row;
+		int disp_yaw = yaw, disp_pitch = pitch;
 		//if (com_points > 0 && frame_wait <= 0)
-		if (frame_wait <= 0)
+		if (frame_wait <= 0 && max(abs(yaw), abs(pitch)) > 3)
 		{
-			if (yaw && pitch)
+			if (yaw || pitch)
 			{
 				targ_x = 64;
 				targ_y = 16;
@@ -259,12 +273,12 @@ int main (int argc, const char* argv[])
 			do
 			{
 				int yaw_ticks, pitch_ticks;
-				spi_transfer(spi_fd, control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks));
+				uint8_t ctrl_byte = control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks);
+				spi_transfer(spi_fd, ctrl_byte);
 
-				frame_wait += max(pitch_ticks, yaw_ticks) * 5;
+				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * 10;
 				yaw -= yaw_ticks;
 				pitch -= pitch_ticks;
-
 			}
 			while(yaw != 0 || pitch != 0);
 		}
@@ -283,7 +297,7 @@ int main (int argc, const char* argv[])
 
 		printf("COM points: %d   \n", com_points);
 		printf("COM (%d, %d)\n", (int)targ_x, (int)targ_y);
-		printf("yaw, pitch: (%d, %d) frames: %d\n", yaw, pitch, frame_count);
+		printf("yaw, pitch: (%d, %d) frames: %d\n", disp_yaw, disp_pitch, frame_count);
 		rows_drawn+=3;
 
 		frame_wait--;
