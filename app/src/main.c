@@ -63,11 +63,12 @@ void wait_frame(vidi_cfg_t* cam, pixel_t frame[480][640])
 		memcpy(frame[r], raw_frame + (r * row_size), row_size);
 	}
 }
+ 
 
 cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 {
 	#define FSIZE 7
-	const int FSIZE_H = 3;
+	const int FSIZE_H = FSIZE / 2;
 
 	cal_t cal = {};
 	pixel_t frame[480][640] = {};
@@ -75,79 +76,81 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	uint8_t feature[FSIZE][FSIZE] = {};
 	const int motor_steps = 5;
 
-	int best_row, best_col, best_score = 100000000;
-
 	const int dr = 480 / 32;
 	const int dc = 640 / 128;
 
-	// let the video stream settle
-	for (int i = 60; i--;)
-	{ vidi_request_frame(cam); wait_frame(cam, frame); }
-
-	// downsample the frame
-	for (int r = 0; r < 32; r++)
-	for (int c = 0; c < 128; c++)
+	for(int steps = 2; steps--;)
 	{
-		int ri = r * dr, ci = c * dc;
-		down_sampled[r][c] = frame[ri][ci].Y;
-	}
+		int best_row, best_col, best_score = 100000000;
 
-	// store the feature
-	for (int r = -FSIZE_H; r <= FSIZE_H; r++)
-	for (int c = -FSIZE_H; c <= FSIZE_H; c++)
-	{
-		feature[r + FSIZE_H][c + FSIZE_H] = down_sampled[16 + r][64 + c];	
-	}
+		// let the video stream settle
+		for (int i = 30; i--;)
+		{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
-	// move on the yaw and pitch axis
-	int pt, yt;
-	spi_transfer(spi_fd, control_byte(motor_steps, motor_steps, &yt, &pt));
-
-	// capture another frame (wait for a bit)
-	for (int i = 60; i--;)
-	{
-		// request the camera to capture a frame
-		vidi_request_frame(cam);
-		wait_frame(cam, frame);
-	}
-
-	// downsample the frame
-	for (int r = 0; r < 32; r++)
-	for (int c = 0; c < 128; c++)
-	{
-		int ri = r * dr, ci = c * dc;
-		down_sampled[r][c] = frame[ri][ci].Y;
-	}
-
-	// find the best feature
-	for (int r = 10; r < 22; r++)
-	for (int c = 32; c < (128 - 32); c++)
-	{
-		int score = 0;
-		for (int i = -FSIZE_H; i <= FSIZE_H; i++)
-		for (int j = -FSIZE_H; j <= FSIZE_H; j++)
+		// downsample the frame
+		for (int r = 0; r < 32; r++)
+		for (int c = 0; c < 128; c++)
 		{
-			score += abs(feature[i + FSIZE_H][j + FSIZE_H] - down_sampled[r + i][c + j]);
+			int ri = r * dr, ci = c * dc;
+			down_sampled[r][c] = frame[ri][ci].Y;
 		}
 
-		if (score < best_score)
+		// store the feature
+		for (int r = -FSIZE_H; r <= FSIZE_H; r++)
+		for (int c = -FSIZE_H; c <= FSIZE_H; c++)
 		{
-			best_row = r;
-			best_col = c;
-			best_score = score;
+			feature[r + FSIZE_H][c + FSIZE_H] = down_sampled[16 + r][64 + c];	
 		}
+
+		// move on the yaw and pitch axis
+		int pt, yt;
+		spi_transfer(spi_fd, control_byte(motor_steps, motor_steps, &yt, &pt));
+
+		// capture another frame (wait for a bit)
+		for (int i = 30; i--;)
+		{ vidi_request_frame(cam); wait_frame(cam, frame); }
+
+		// downsample the frame
+		for (int r = 0; r < 32; r++)
+		for (int c = 0; c < 128; c++)
+		{
+			int ri = r * dr, ci = c * dc;
+			down_sampled[r][c] = frame[ri][ci].Y;
+		}
+
+		// find the best feature
+		for (int r = 10; r < 22; r++)
+		for (int c = 32; c < (128 - 32); c++)
+		{
+			int score = 0;
+			for (int i = -FSIZE_H; i <= FSIZE_H; i++)
+			for (int j = -FSIZE_H; j <= FSIZE_H; j++)
+			{
+				score += abs(feature[i + FSIZE_H][j + FSIZE_H] - down_sampled[r + i][c + j]);
+			}
+
+			if (score < best_score)
+			{
+				best_row = r;
+				best_col = c;
+				best_score = score;
+			}
+		}
+
+		spi_transfer(spi_fd, control_byte(-motor_steps, -motor_steps, &yt, &pt));
+		fprintf(stderr, "best_score: %d, coord: (%d, %d)\n", best_score, best_row, best_col);
+
+		// let the video stream settle
+		for (int i = 60; i--;)
+		{ vidi_request_frame(cam); wait_frame(cam, frame); }
+
+
+		cal.steps_per_col += fabsf(motor_steps / (64.f - best_col));
+		cal.steps_per_row += fabsf(motor_steps / (16.f - best_row));
 	}
 
-	spi_transfer(spi_fd, control_byte(-motor_steps, -motor_steps, &yt, &pt));
-	fprintf(stderr, "best_score: %d, coord: (%d, %d)\n", best_score, best_row, best_col);
-
-	// let the video stream settle
-	for (int i = 60; i--;)
-	{ vidi_request_frame(cam); wait_frame(cam, frame); }
-
-
-	cal.steps_per_col = fabsf(motor_steps / (64.f - best_col));
-	cal.steps_per_row = fabsf(motor_steps / (16.f - best_row));
+	cal.steps_per_col /= 2;
+	cal.steps_per_row /= 2;
 
 	return cal;
 }
@@ -186,6 +189,7 @@ int main (int argc, const char* argv[])
 	float targ_y = 16;
 	int frame_wait = 4;
 	int frame_count = 0;
+	int error_time = 0;
 
 	cal_t cal = calibrate(&cam, spi_fd);
 	spi_transfer(spi_fd, 0);
@@ -225,9 +229,9 @@ int main (int argc, const char* argv[])
 
 				int delta_idx = max(delta - 8, 0) / 18;
 				int idx = grey / 18;
-				display[r][c] = spectrum[delta_idx];//spectrum[max(0, idx - delta_idx)];;
+				display[r][c] = spectrum[max(0, idx - delta_idx)];;
 
-				if (frame_wait <= 0)
+				//if (frame_wait <= 0)
 				if (delta_idx >= 2)
 				{
 					com_x += c;
@@ -237,7 +241,7 @@ int main (int argc, const char* argv[])
 			}
 		}
 
-		if (com_points > 0 && frame_wait <= 0)
+		if (com_points > 0)// && frame_wait <= 0)
 		{
 			float x = com_x / com_points;
 			float y = com_y / com_points;
@@ -262,7 +266,10 @@ int main (int argc, const char* argv[])
 		int pitch = -(targ_y - 16) * cal.steps_per_row;
 		int disp_yaw = yaw, disp_pitch = pitch;
 		//if (com_points > 0 && frame_wait <= 0)
-		if (frame_wait <= 0 && max(abs(yaw), abs(pitch)) > 3)
+
+		error_time += sqrt(yaw * yaw + pitch * pitch);
+
+		if (frame_wait <= 0 && error_time > 10)//max(abs(yaw), abs(pitch)) > 3)
 		{
 			if (yaw || pitch)
 			{
@@ -270,13 +277,15 @@ int main (int argc, const char* argv[])
 				targ_y = 16;
 			}
 
+			error_time = 0;
+
 			do
 			{
 				int yaw_ticks, pitch_ticks;
 				uint8_t ctrl_byte = control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks);
 				spi_transfer(spi_fd, ctrl_byte);
 
-				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * 10;
+				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * 5;
 				yaw -= yaw_ticks;
 				pitch -= pitch_ticks;
 			}
@@ -295,9 +304,9 @@ int main (int argc, const char* argv[])
 			rows_drawn += 1;
 		}
 
-		printf("COM points: %d   \n", com_points);
+		printf("COM points: %d error_time %d   \n", com_points, error_time);
 		printf("COM (%d, %d)\n", (int)targ_x, (int)targ_y);
-		printf("yaw, pitch: (%d, %d) frames: %d\n", disp_yaw, disp_pitch, frame_count);
+		printf("yaw, pitch: (%d, %d) frames: %d \n", disp_yaw, disp_pitch, frame_count);
 		rows_drawn+=3;
 
 		frame_wait--;
