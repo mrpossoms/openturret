@@ -15,6 +15,8 @@
 #define DEG_COL 1
 #define DEG_PITCH_STEP 1
 #define DEG_YAW_STEP 1
+#define DS_W (128)
+#define DS_H (32)
 
 typedef union {
 	struct {
@@ -72,12 +74,12 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 
 	cal_t cal = {};
 	pixel_t frame[480][640] = {};
-	uint8_t down_sampled[32][128] = {};
+	uint8_t down_sampled[DS_H][DS_W] = {};
 	uint8_t feature[FSIZE][FSIZE] = {};
 	const int motor_steps = 5;
 
-	const int dr = 480 / 32;
-	const int dc = 640 / 128;
+	const int dr = 480 / DS_H;
+	const int dc = 640 / DS_W;
 
 	for(int steps = 2; steps--;)
 	{
@@ -88,8 +90,8 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
 		// downsample the frame
-		for (int r = 0; r < 32; r++)
-		for (int c = 0; c < 128; c++)
+		for (int r = 0; r < DS_H; r++)
+		for (int c = 0; c < DS_W; c++)
 		{
 			int ri = r * dr, ci = c * dc;
 			down_sampled[r][c] = frame[ri][ci].Y;
@@ -99,7 +101,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		for (int r = -FSIZE_H; r <= FSIZE_H; r++)
 		for (int c = -FSIZE_H; c <= FSIZE_H; c++)
 		{
-			feature[r + FSIZE_H][c + FSIZE_H] = down_sampled[16 + r][64 + c];	
+			feature[r + FSIZE_H][c + FSIZE_H] = down_sampled[(DS_H >> 1) + r][(DS_W >> 1) + c];	
 		}
 
 		// move on the yaw and pitch axis
@@ -111,16 +113,16 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
 		// downsample the frame
-		for (int r = 0; r < 32; r++)
-		for (int c = 0; c < 128; c++)
+		for (int r = 0; r < DS_H; r++)
+		for (int c = 0; c < DS_W; c++)
 		{
 			int ri = r * dr, ci = c * dc;
 			down_sampled[r][c] = frame[ri][ci].Y;
 		}
 
 		// find the best feature
-		for (int r = 10; r < 22; r++)
-		for (int c = 32; c < (128 - 32); c++)
+		for (int r = 10; r < (DS_H - 10); r++)
+		for (int c = 32; c < (DS_W - 32); c++)
 		{
 			int score = 0;
 			for (int i = -FSIZE_H; i <= FSIZE_H; i++)
@@ -145,8 +147,8 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
 
-		cal.steps_per_col += fabsf(motor_steps / (64.f - best_col));
-		cal.steps_per_row += fabsf(motor_steps / (16.f - best_row));
+		cal.steps_per_col += fabsf(motor_steps / ((float)(DS_W >> 1) - best_col));
+		cal.steps_per_row += fabsf(motor_steps / ((float)(DS_H >> 1) - best_row));
 	}
 
 	cal.steps_per_col /= 2;
@@ -182,11 +184,12 @@ int main (int argc, const char* argv[])
 
 	pixel_t last_frame[480][640] = {};
 	pixel_t frame[480][640] = {};
+	uint8_t diff[32][128] = {};
 	char display[32][128] = {};
 
 	int rows_drawn = 0;
-	float targ_x = 64;
-	float targ_y = 16;
+	float targ_x = DS_W >> 1;
+	float targ_y = DS_H >> 1;
 	int frame_wait = 4;
 	int frame_count = 0;
 	int error_time = 0;
@@ -214,34 +217,41 @@ int main (int argc, const char* argv[])
 		//int com_points = 1;
 		float com_x = 0, com_y = 0;
 		int com_points = 0;
-		const int dr = 480 / 32;
-		const int dc = 640 / 128;
+		const int dr = 480 / DS_H;
+		const int dc = 640 / DS_W;
+
+		
+		for (int r = 0; r < DS_H; r++)
+		for (int c = 0; c < DS_W; c++)
+		{
+			if (diff[r][c] > 0) { diff[r][c] *= 0.5f; }
+		}
 
 		if (frame_count > 0)
-		for (int r = 0; r < 32; r++)
+		for (int r = 0; r < DS_H; r++)
+		for (int c = 0; c < DS_W; c++)
 		{
-			for (int c = 0; c < 128; c++)
+			int ri = r * dr, ci = c * dc;
+			int last_grey = last_frame[ri][ci].Y;//(last_frame[ri][ci].r + last_frame[ri][ci].g + last_frame[ri][ci].b) / 3;
+			int grey = frame[ri][ci].Y;
+			int delta = abs(grey-last_grey);
+			diff[r][c] += delta;
+
+			int delta_idx = max(diff[r][c], 0) / 18;
+			int idx = grey / 18;
+			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
+			display[r][c] = spectrum[max(0, delta_idx)];
+
+			//if (frame_wait <= 0)
+			if (delta_idx >= 1)
 			{
-				int ri = r * dr, ci = c * dc;
-				int last_grey = last_frame[ri][ci].Y;//(last_frame[ri][ci].r + last_frame[ri][ci].g + last_frame[ri][ci].b) / 3;
-				int grey = frame[ri][ci].Y;
-				int delta = abs(grey-last_grey);
-
-				int delta_idx = max(delta - 8, 0) / 18;
-				int idx = grey / 18;
-				display[r][c] = spectrum[max(0, idx - delta_idx)];;
-
-				//if (frame_wait <= 0)
-				if (delta_idx >= 2)
-				{
-					com_x += c;
-					com_y += r;
-					com_points++;
-				}
+				com_x += c;
+				com_y += r;
+				com_points++;
 			}
 		}
 
-		if (com_points > 0)// && frame_wait <= 0)
+		if (com_points > 5)// && frame_wait <= 0)
 		{
 			float x = com_x / com_points;
 			float y = com_y / com_points;
@@ -252,7 +262,7 @@ int main (int argc, const char* argv[])
 		}
 
 		display[(int)targ_y][(int)targ_x] = '#';
-		display[16][64] = '+';
+		display[DS_H >> 1][DS_W >> 1] = '+';
 
 		if (rows_drawn > 0)
 		{ // Erase the previously drawn rows
@@ -262,8 +272,8 @@ int main (int argc, const char* argv[])
 			rows_drawn = 0;
 		}
 
-		int yaw = -(targ_x - 64) * cal.steps_per_col;
-		int pitch = -(targ_y - 16) * cal.steps_per_row;
+		int yaw = -(targ_x - (DS_W >> 1)) * cal.steps_per_col;
+		int pitch = -(targ_y - (DS_H >> 1)) * cal.steps_per_row;
 		int disp_yaw = yaw, disp_pitch = pitch;
 		//if (com_points > 0 && frame_wait <= 0)
 
@@ -273,8 +283,8 @@ int main (int argc, const char* argv[])
 		{
 			if (yaw || pitch)
 			{
-				targ_x = 64;
-				targ_y = 16;
+				targ_x = DS_W >> 1;
+				targ_y = DS_H >> 1;
 			}
 
 			error_time = 0;
@@ -291,11 +301,16 @@ int main (int argc, const char* argv[])
 			}
 			while(yaw != 0 || pitch != 0);
 		}
+		else
+		{
+			// turn steppers off to save energy
+			spi_transfer(spi_fd, 0);
+		}
 
 		// display
-		for (int r = 0; r < 32; r++)
+		for (int r = 0; r < DS_H; r++)
 		{
-			for (int c = 0; c < 128; c++)
+			for (int c = 0; c < DS_W; c++)
 			{
 				fputc(display[r][c], stderr);
 			}
