@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <linux/types.h>
 #include <math.h>
@@ -10,13 +11,12 @@
 #include "utils.h"
 #include "vidi.h"
 
-#define CAM_FOV 30
-#define DEG_ROW 1
-#define DEG_COL 1
-#define DEG_PITCH_STEP 1
-#define DEG_YAW_STEP 1
-#define DS_W (128)
-#define DS_H (32)
+#define W (640)
+#define H (480)
+#define DS_W (256)
+#define DS_H (64)
+
+int spi_fd;
 
 typedef union {
 	struct {
@@ -38,6 +38,7 @@ typedef struct {
 typedef struct {
 	float steps_per_row;
 	float steps_per_col;
+	float frames_per_step;
 } cal_t;
 
 
@@ -54,13 +55,34 @@ uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
 	return ctrl_byte | ((abs(*yaw_ticks) << 4) | abs(*pitch_ticks));
 }
 
-void wait_frame(vidi_cfg_t* cam, pixel_t frame[480][640])
+float frame_difference(const size_t r, const size_t c, pixel_t f0[r][c], pixel_t f1[r][c])
+{
+	float diff = 0;	
+
+	for (size_t ri = 0; ri < r; ri++)
+	for (size_t ci = 0; ci < c; ci++)
+	{
+		diff += fabsf(f0[ri][ci].Y - f1[ri][ci].Y);
+	}
+
+	return diff / (r * c);
+}
+
+void copy_frame(size_t r, const size_t c, pixel_t dest[r][c], pixel_t src[r][c])
+{
+	for (;r--;)
+	{
+		memcpy(dest[r], src[r], sizeof(pixel_t) * c);
+	}
+}
+
+void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 {
 	// this function blocks until a frame pointer is returned
 	uint8_t* raw_frame = vidi_wait_frame(cam);
 	size_t row_size = vidi_row_bytes(cam);
 
-	for (int r = 0; r < 480; r++)
+	for (int r = 0; r < H; r++)
 	{
 		memcpy(frame[r], raw_frame + (r * row_size), row_size);
 	}
@@ -73,21 +95,32 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	const int FSIZE_H = FSIZE / 2;
 
 	cal_t cal = {};
-	pixel_t frame[480][640] = {};
+	pixel_t frame[H][W] = {}, last_frame[H][W] = {}, settle_frame[H][W];
 	uint8_t down_sampled[DS_H][DS_W] = {};
 	uint8_t feature[FSIZE][FSIZE] = {};
 	const int motor_steps = 5;
 
-	const int dr = 480 / DS_H;
-	const int dc = 640 / DS_W;
+	const int dr = H / DS_H;
+	const int dc = W / DS_W;
 
 	for(int steps = 2; steps--;)
 	{
 		int best_row, best_col, best_score = 100000000;
 
 		// let the video stream settle
-		for (int i = 30; i--;)
-		{ vidi_request_frame(cam); wait_frame(cam, frame); }
+		float expected_diff = 0;
+		for (int i = 35; i--;)
+		{
+			copy_frame(H, W, last_frame, frame);
+			copy_frame(H, W, settle_frame, frame);
+			vidi_request_frame(cam); wait_frame(cam, frame);
+			if (i < 30)
+			expected_diff += frame_difference(H, W, last_frame, frame);
+			
+		}
+
+		expected_diff /= 30;
+		printf("Expected diff: %f\n", expected_diff);
 
 		// downsample the frame
 		for (int r = 0; r < DS_H; r++)
@@ -109,8 +142,20 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		spi_transfer(spi_fd, control_byte(motor_steps, motor_steps, &yt, &pt));
 
 		// capture another frame (wait for a bit)
-		for (int i = 30; i--;)
-		{ vidi_request_frame(cam); wait_frame(cam, frame); }
+		int frames_waited = 1;
+		float frame_diff;
+		do
+		{
+			vidi_request_frame(cam); wait_frame(cam, frame);
+			frame_diff = frame_difference(H, W, settle_frame, frame);
+			copy_frame(H, W, settle_frame, frame);
+			printf("difference: %f\n", frame_diff);
+			frames_waited++;
+		}
+		while (frame_diff > expected_diff);
+
+		cal.frames_per_step = frames_waited / (float)motor_steps;
+		printf("frames_per_step: %f\n", cal.frames_per_step);
 
 		// downsample the frame
 		for (int r = 0; r < DS_H; r++)
@@ -149,6 +194,8 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 
 		cal.steps_per_col += fabsf(motor_steps / ((float)(DS_W >> 1) - best_col));
 		cal.steps_per_row += fabsf(motor_steps / ((float)(DS_H >> 1) - best_row));
+
+		assert(!isinf(cal.steps_per_col * cal.steps_per_row));
 	}
 
 	cal.steps_per_col /= 2;
@@ -157,15 +204,20 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	return cal;
 }
 
+void steppers_off(int sig)
+{
+	spi_transfer(spi_fd, 0);
+}
+
 int main (int argc, const char* argv[])
 {
 	// define a configuration object for a camera, here
 	// you can request frame size, pixel format, frame rate
 	// and the camera which you wish to use.
 	vidi_cfg_t cam = {
-		.width = 640,
-		.height = 480,
-		.frames_per_sec = 60,
+		.width = W,
+		.height = H,
+		.frames_per_sec = 30,
 		.path = argv[1],
 		.pixel_format = V4L2_PIX_FMT_YUYV
 	};
@@ -175,17 +227,25 @@ int main (int argc, const char* argv[])
 	// existing vidi_cfg_t camera instance.
 	assert(0 == vidi_config(&cam));
 
-	int spi_fd = open("/dev/spidev0.0", O_RDWR);
+	spi_fd = open("/dev/spidev0.0", O_RDWR);
 
 	if (spi_fd >= 0)
 	{
 		spi_config(spi_fd);
 	}
 
-	pixel_t last_frame[480][640] = {};
-	pixel_t frame[480][640] = {};
-	uint8_t diff[32][128] = {};
-	char display[32][128] = {};
+	sigaction(
+		SIGABRT,
+		&(struct sigaction){
+			.sa_handler = steppers_off,
+		},
+		NULL
+	);
+
+	pixel_t last_frame[H][W] = {};
+	pixel_t frame[H][W] = {};
+	uint8_t diff[DS_H][DS_W] = {};
+	char display[DS_H][DS_W] = {};
 
 	int rows_drawn = 0;
 	float targ_x = DS_W >> 1;
@@ -197,7 +257,6 @@ int main (int argc, const char* argv[])
 	cal_t cal = calibrate(&cam, spi_fd);
 	spi_transfer(spi_fd, 0);
 	fprintf(stderr, "steps_per_row: %f, steps_per_col: %f\n", cal.steps_per_row, cal.steps_per_col);
-
 
 	fputs("\033[?25l", stderr);
 	vidi_request_frame(&cam);
@@ -213,12 +272,10 @@ int main (int argc, const char* argv[])
 		const char spectrum[] = "  .,':;|[{+*x88";
 
 		// process
-		//float com_x = 64, com_y = 16;
-		//int com_points = 1;
 		float com_x = 0, com_y = 0;
 		int com_points = 0;
-		const int dr = 480 / DS_H;
-		const int dc = 640 / DS_W;
+		const int dr = H / DS_H;
+		const int dc = W / DS_W;
 
 		
 		for (int r = 0; r < DS_H; r++)
@@ -227,12 +284,11 @@ int main (int argc, const char* argv[])
 			if (diff[r][c] > 0) { diff[r][c] *= 0.5f; }
 		}
 
-		if (frame_count > 0)
 		for (int r = 0; r < DS_H; r++)
 		for (int c = 0; c < DS_W; c++)
 		{
 			int ri = r * dr, ci = c * dc;
-			int last_grey = last_frame[ri][ci].Y;//(last_frame[ri][ci].r + last_frame[ri][ci].g + last_frame[ri][ci].b) / 3;
+			int last_grey = last_frame[ri][ci].Y;
 			int grey = frame[ri][ci].Y;
 			int delta = abs(grey-last_grey);
 			diff[r][c] += delta;
@@ -242,7 +298,6 @@ int main (int argc, const char* argv[])
 			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
 			display[r][c] = spectrum[max(0, delta_idx)];
 
-			//if (frame_wait <= 0)
 			if (delta_idx >= 1)
 			{
 				com_x += c;
@@ -251,17 +306,19 @@ int main (int argc, const char* argv[])
 			}
 		}
 
-		if (com_points > 5)// && frame_wait <= 0)
+		if (com_points > 5 && frame_wait <= 0)
 		{
 			float x = com_x / com_points;
 			float y = com_y / com_points;
 
-			const float power = 5;
+			const float power = 2;
 			targ_x = (x + targ_x * (power - 1.f)) / power;
 			targ_y = (y + targ_y * (power - 1.f)) / power;			
 		}
 
-		display[(int)targ_y][(int)targ_x] = '#';
+		for (int i = 0; i < 2; i++)
+		for (int j = 0; j < 2; j++)
+		display[(int)targ_y+j][(int)targ_x+i] = '#';
 		display[DS_H >> 1][DS_W >> 1] = '+';
 
 		if (rows_drawn > 0)
@@ -279,7 +336,7 @@ int main (int argc, const char* argv[])
 
 		error_time += sqrt(yaw * yaw + pitch * pitch);
 
-		if (frame_wait <= 0 && error_time > 10)//max(abs(yaw), abs(pitch)) > 3)
+		if (frame_wait <= 0 && error_time > 100)//max(abs(yaw), abs(pitch)) > 3)
 		{
 			if (yaw || pitch)
 			{
@@ -295,7 +352,7 @@ int main (int argc, const char* argv[])
 				uint8_t ctrl_byte = control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks);
 				spi_transfer(spi_fd, ctrl_byte);
 
-				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * 5;
+				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * cal.frames_per_step * 2;
 				yaw -= yaw_ticks;
 				pitch -= pitch_ticks;
 			}
@@ -308,11 +365,11 @@ int main (int argc, const char* argv[])
 		}
 
 		// display
-		for (int r = 0; r < DS_H; r++)
+		for (int r = 0; r < DS_H / 2; r++)
 		{
-			for (int c = 0; c < DS_W; c++)
+			for (int c = 0; c < DS_W / 2; c++)
 			{
-				fputc(display[r][c], stderr);
+				fputc(display[r * 2][c * 2], stderr);
 			}
 			fputc('|', stderr);
 			fputc('\n', stderr);
