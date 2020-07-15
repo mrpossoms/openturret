@@ -98,12 +98,12 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	pixel_t frame[H][W] = {}, last_frame[H][W] = {}, settle_frame[H][W];
 	uint8_t down_sampled[DS_H][DS_W] = {};
 	uint8_t feature[FSIZE][FSIZE] = {};
-	const int motor_steps = 5;
+	const int motor_steps = 7;
 
 	const int dr = H / DS_H;
 	const int dc = W / DS_W;
 
-	for(int steps = 2; steps--;)
+	for(int steps = 1; steps--;)
 	{
 		int best_row, best_col, best_score = 100000000;
 
@@ -217,7 +217,7 @@ int main (int argc, const char* argv[])
 	vidi_cfg_t cam = {
 		.width = W,
 		.height = H,
-		.frames_per_sec = 30,
+		.frames_per_sec = 15,
 		.path = argv[1],
 		.pixel_format = V4L2_PIX_FMT_YUYV
 	};
@@ -234,13 +234,8 @@ int main (int argc, const char* argv[])
 		spi_config(spi_fd);
 	}
 
-	sigaction(
-		SIGABRT,
-		&(struct sigaction){
-			.sa_handler = steppers_off,
-		},
-		NULL
-	);
+	sigaction(SIGINT, &(struct sigaction){ .sa_handler = steppers_off, }, NULL);
+	sigaction(SIGABRT, &(struct sigaction){ .sa_handler = steppers_off, }, NULL);
 
 	pixel_t last_frame[H][W] = {};
 	pixel_t frame[H][W] = {};
@@ -269,7 +264,7 @@ int main (int argc, const char* argv[])
 		vidi_request_frame(&cam);
 
 
-		const char spectrum[] = "  .,':;|[{+*x88";
+		const char spectrum[] = " .,':;|[{+*x88ASDDBDFSDFSDBHGJFU";
 
 		// process
 		float com_x = 0, com_y = 0;
@@ -290,11 +285,11 @@ int main (int argc, const char* argv[])
 			int ri = r * dr, ci = c * dc;
 			int last_grey = last_frame[ri][ci].Y;
 			int grey = frame[ri][ci].Y;
-			int delta = abs(grey-last_grey);
+			int delta = max(abs(grey-last_grey) - 16, 0);
 			diff[r][c] += delta;
 
-			int delta_idx = max(diff[r][c], 0) / 18;
-			int idx = grey / 18;
+			int delta_idx = max(diff[r][c], 0) / 10;
+			int idx = grey / 10;
 			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
 			display[r][c] = spectrum[max(0, delta_idx)];
 
@@ -336,7 +331,7 @@ int main (int argc, const char* argv[])
 
 		error_time += sqrt(yaw * yaw + pitch * pitch);
 
-		if (frame_wait <= 0 && error_time > 100)//max(abs(yaw), abs(pitch)) > 3)
+		if (frame_wait <= 0 && error_time > 10)//max(abs(yaw), abs(pitch)) > 3)
 		{
 			if (yaw || pitch)
 			{
@@ -352,7 +347,7 @@ int main (int argc, const char* argv[])
 				uint8_t ctrl_byte = control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks);
 				spi_transfer(spi_fd, ctrl_byte);
 
-				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * cal.frames_per_step * 2;
+				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * cal.frames_per_step * 1;
 				yaw -= yaw_ticks;
 				pitch -= pitch_ticks;
 			}
@@ -365,6 +360,7 @@ int main (int argc, const char* argv[])
 		}
 
 		// display
+		if (frame_wait > 0) { fprintf(stderr, "\033[31m"); }
 		for (int r = 0; r < DS_H / 2; r++)
 		{
 			for (int c = 0; c < DS_W / 2; c++)
@@ -375,13 +371,14 @@ int main (int argc, const char* argv[])
 			fputc('\n', stderr);
 			rows_drawn += 1;
 		}
+		fprintf(stderr, "\033[0m");
 
-		printf("COM points: %d error_time %d   \n", com_points, error_time);
+		printf("COM points: %d error_time %d frame_wait: %d   \n", com_points, error_time, frame_wait);
 		printf("COM (%d, %d)\n", (int)targ_x, (int)targ_y);
 		printf("yaw, pitch: (%d, %d) frames: %d \n", disp_yaw, disp_pitch, frame_count);
 		rows_drawn+=3;
 
-		frame_wait--;
+		if (frame_wait > 0) { frame_wait--; }
 		frame_count++;
 		memcpy(last_frame, frame, sizeof(frame));
 	}
