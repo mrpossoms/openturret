@@ -4,9 +4,11 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include <linux/types.h>
+#include <inttypes.h>
 #include <math.h>
 
+#include "structs.h"
+#include "feature_matcher.h"
 #include "spi.h"
 #include "utils.h"
 #include "vidi.h"
@@ -17,30 +19,6 @@
 #define DS_H (64)
 
 int spi_fd;
-
-typedef union {
-	struct {
-		uint8_t r, g, b;
-	};
-	uint8_t v[3];
-} rgb_t;
-
-
-typedef struct {
-	uint8_t Y, UV;
-} pixel_t;
-
-typedef struct {
-	size_t width, height;
-	rgb_t* buf;
-} frame_t;
-
-typedef struct {
-	float steps_per_row;
-	float steps_per_col;
-	float frames_per_step;
-} cal_t;
-
 
 uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
 {
@@ -103,10 +81,9 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	const int dr = H / DS_H;
 	const int dc = W / DS_W;
 
-	for(int steps = 1; steps--;)
+	const int steps = 1;
+	for(int si = steps; si--;)
 	{
-		int best_row, best_col, best_score = 100000000;
-
 		// let the video stream settle
 		float expected_diff = 0;
 		for (int i = 35; i--;)
@@ -166,40 +143,30 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		}
 
 		// find the best feature
-		for (int r = 10; r < (DS_H - 10); r++)
-		for (int c = 32; c < (DS_W - 32); c++)
-		{
-			int score = 0;
-			for (int i = -FSIZE_H; i <= FSIZE_H; i++)
-			for (int j = -FSIZE_H; j <= FSIZE_H; j++)
-			{
-				score += abs(feature[i + FSIZE_H][j + FSIZE_H] - down_sampled[r + i][c + j]);
-			}
-
-			if (score < best_score)
-			{
-				best_row = r;
-				best_col = c;
-				best_score = score;
-			}
-		}
+		match_t match = match_feature(
+			(point_t){ DS_H, DS_W },
+			down_sampled,
+			(point_t){ FSIZE, FSIZE },
+			feature,
+			(win_t){{ 0, 0 }, { DS_H, DS_W }}  
+		);
 
 		spi_transfer(spi_fd, control_byte(-motor_steps, -motor_steps, &yt, &pt));
-		fprintf(stderr, "best_score: %d, coord: (%d, %d)\n", best_score, best_row, best_col);
+		fprintf(stderr, "best_score: %d, coord: (%d, %d)\n", match.score, match.r, match.c);
 
 		// let the video stream settle
 		for (int i = 60; i--;)
 		{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
 
-		cal.steps_per_col += fabsf(motor_steps / ((float)(DS_W >> 1) - best_col));
-		cal.steps_per_row += fabsf(motor_steps / ((float)(DS_H >> 1) - best_row));
+		cal.steps_per_col += fabsf(motor_steps / ((float)(DS_W >> 1) - match.c));
+		cal.steps_per_row += fabsf(motor_steps / ((float)(DS_H >> 1) - match.r));
 
 		assert(!isinf(cal.steps_per_col * cal.steps_per_row));
 	}
 
-	cal.steps_per_col /= 2;
-	cal.steps_per_row /= 2;
+	cal.steps_per_col /= steps;
+	cal.steps_per_row /= steps;
 
 	return cal;
 }
@@ -234,8 +201,11 @@ int main (int argc, const char* argv[])
 		spi_config(spi_fd);
 	}
 
-	sigaction(SIGINT, &(struct sigaction){ .sa_handler = steppers_off, }, NULL);
-	sigaction(SIGABRT, &(struct sigaction){ .sa_handler = steppers_off, }, NULL);
+	struct sigaction action = {
+		.sa_handler = steppers_off,
+	};
+	sigaction(SIGINT, &action, NULL);
+	sigaction(SIGABRT, &action, NULL);
 
 	pixel_t last_frame[H][W] = {};
 	pixel_t frame[H][W] = {};
