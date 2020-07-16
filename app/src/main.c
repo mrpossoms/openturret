@@ -152,7 +152,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		);
 
 		spi_transfer(spi_fd, control_byte(-motor_steps, -motor_steps, &yt, &pt));
-		fprintf(stderr, "best_score: %d, coord: (%d, %d)\n", match.score, match.r, match.c);
+		fprintf(stderr, "best_score: %f, coord: (%d, %d)\n", match.score, match.r, match.c);
 
 		// let the video stream settle
 		for (int i = 60; i--;)
@@ -242,12 +242,6 @@ int main (int argc, const char* argv[])
 		const int dr = H / DS_H;
 		const int dc = W / DS_W;
 
-		
-		for (int r = 0; r < DS_H; r++)
-		for (int c = 0; c < DS_W; c++)
-		{
-			if (diff[r][c] > 0) { diff[r][c] *= 0.5f; }
-		}
 
 		for (int r = 0; r < DS_H; r++)
 		for (int c = 0; c < DS_W; c++)
@@ -256,7 +250,7 @@ int main (int argc, const char* argv[])
 			int last_grey = last_frame[ri][ci].Y;
 			int grey = frame[ri][ci].Y;
 			int delta = max(abs(grey-last_grey) - 16, 0);
-			diff[r][c] += delta;
+			diff[r][c] = delta;
 
 			int delta_idx = max(diff[r][c], 0) / 10;
 			int idx = grey / 10;
