@@ -13,6 +13,7 @@
 
 #include "structs.h"
 #include "feature_matcher.h"
+#include "frame_utils.h"
 #include "spi.h"
 #include "utils.h"
 #include "vidi.h"
@@ -21,6 +22,7 @@
 #define H (480)
 #define DS_W (256)
 #define DS_H (64)
+#define FEAT_SIZE 7
 
 int spi_fd;
 bool running = true;
@@ -38,27 +40,6 @@ uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
 	return ctrl_byte | ((abs(*yaw_ticks) << 4) | abs(*pitch_ticks));
 }
 
-float frame_difference(const size_t r, const size_t c, pixel_t f0[r][c], pixel_t f1[r][c])
-{
-	float diff = 0;	
-
-	for (size_t ri = 0; ri < r; ri++)
-	for (size_t ci = 0; ci < c; ci++)
-	{
-		diff += fabsf(f0[ri][ci].Y - f1[ri][ci].Y);
-	}
-
-	return diff / (r * c);
-}
-
-void copy_frame(size_t r, const size_t c, pixel_t dest[r][c], pixel_t src[r][c])
-{
-	for (;r--;)
-	{
-		memcpy(dest[r], src[r], sizeof(pixel_t) * c);
-	}
-}
-
 void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 {
 	// this function blocks until a frame pointer is returned
@@ -74,13 +55,13 @@ void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 
 cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 {
-	#define FSIZE 7
-	const int FSIZE_H = FSIZE / 2;
+
+	const int FEAT_SIZE_H = FEAT_SIZE / 2;
 
 	cal_t cal = {};
 	pixel_t frame[H][W] = {}, last_frame[H][W] = {}, settle_frame[H][W];
 	uint8_t down_sampled[DS_H][DS_W] = {};
-	uint8_t feature[FSIZE][FSIZE] = {};
+	uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
 	const int motor_steps = 7;
 
 	const int dr = H / DS_H;
@@ -93,8 +74,8 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		float expected_diff = 0;
 		for (int i = 35; i--;)
 		{
-			copy_frame(H, W, last_frame, frame);
-			copy_frame(H, W, settle_frame, frame);
+			frame_copy_pixel(H, W, last_frame, H, W, frame, (win_t){{}, {H, W}});
+			frame_copy_pixel(H, W, settle_frame, H, W, frame, (win_t){{}, {H, W}});
 			vidi_request_frame(cam); wait_frame(cam, frame);
 			if (i < 30)
 			expected_diff += frame_difference(H, W, last_frame, frame);
@@ -113,10 +94,10 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		}
 
 		// store the feature
-		for (int r = -FSIZE_H; r <= FSIZE_H; r++)
-		for (int c = -FSIZE_H; c <= FSIZE_H; c++)
+		for (int r = -FEAT_SIZE_H; r <= FEAT_SIZE_H; r++)
+		for (int c = -FEAT_SIZE_H; c <= FEAT_SIZE_H; c++)
 		{
-			feature[r + FSIZE_H][c + FSIZE_H] = down_sampled[(DS_H >> 1) + r][(DS_W >> 1) + c];	
+			feature[r + FEAT_SIZE_H][c + FEAT_SIZE_H] = down_sampled[(DS_H >> 1) + r][(DS_W >> 1) + c];	
 		}
 
 		// move on the yaw and pitch axis
@@ -130,7 +111,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		{
 			vidi_request_frame(cam); wait_frame(cam, frame);
 			frame_diff = frame_difference(H, W, settle_frame, frame);
-			copy_frame(H, W, settle_frame, frame);
+			frame_copy_pixel(H, W, settle_frame, H, W, frame, (win_t){{}, {H, W}});
 			printf("difference: %f\n", frame_diff);
 			frames_waited++;
 		}
@@ -151,7 +132,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		match_t match = match_feature(
 			(point_t){ DS_H, DS_W },
 			down_sampled,
-			(point_t){ FSIZE, FSIZE },
+			(point_t){ FEAT_SIZE, FEAT_SIZE },
 			feature,
 			(win_t){{ 0, 0 }, { DS_H, DS_W }}  
 		);
@@ -217,11 +198,13 @@ int main (int argc, const char* argv[])
 	pixel_t last_frame[H][W] = {};
 	pixel_t frame[H][W] = {};
 	uint8_t diff[DS_H][DS_W] = {};
+	uint8_t targ_feat[FEAT_SIZE][FEAT_SIZE] = {};
 	char display[DS_H][DS_W] = {};
 
 	int rows_drawn = 0;
 	float targ_x = DS_W >> 1;
 	float targ_y = DS_H >> 1;
+	float targ_dx = 0, targ_dy = 0; 
 	int frame_wait = 4;
 	int frame_count = 0;
 	int error_time = 0;
@@ -274,13 +257,20 @@ int main (int argc, const char* argv[])
 
 		if (com_points > 5 && frame_wait <= 0)
 		{
+			float last_targ_x = targ_x;
+			float last_targ_y = targ_y;
 			float x = com_x / com_points;
 			float y = com_y / com_points;
 
 			const float power = 2;
 			targ_x = (x + targ_x * (power - 1.f)) / power;
-			targ_y = (y + targ_y * (power - 1.f)) / power;			
+			targ_y = (y + targ_y * (power - 1.f)) / power;		
+
+
+			float dx = targ_x - last_targ_x, dy = targ_y - last_targ_y;
+			targ_dx = dx; targ_dy = dy;
 		}
+
 
 		for (int i = 0; i < 2; i++)
 		for (int j = 0; j < 2; j++)
@@ -301,8 +291,9 @@ int main (int argc, const char* argv[])
 		//if (com_points > 0 && frame_wait <= 0)
 
 		error_time += sqrt(yaw * yaw + pitch * pitch);
+		float delta = sqrt(targ_dx * targ_dx + targ_dy * targ_dy);
 
-		if (frame_wait <= 0 && error_time > 10)//max(abs(yaw), abs(pitch)) > 3)
+		if (frame_wait <= 0 && error_time > 10 && delta < 1)//max(abs(yaw), abs(pitch)) > 3)
 		{
 			if (yaw || pitch)
 			{
