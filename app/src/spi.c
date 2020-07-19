@@ -7,7 +7,7 @@
 
 static uint8_t mode = 0;
 static uint8_t bits = 8;
-static uint32_t speed = 1000;
+static uint32_t speed = 10000;
 
 
 static void pabort(const char *s)

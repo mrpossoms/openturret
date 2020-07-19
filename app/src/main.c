@@ -3,8 +3,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <math.h>
 
 #include "structs.h"
@@ -19,6 +23,7 @@
 #define DS_H (64)
 
 int spi_fd;
+bool running = true;
 
 uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
 {
@@ -155,7 +160,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		fprintf(stderr, "best_score: %f, coord: (%d, %d)\n", match.score, match.r, match.c);
 
 		// let the video stream settle
-		for (int i = 60; i--;)
+		for (int i = 30; i--;)
 		{ vidi_request_frame(cam); wait_frame(cam, frame); }
 
 
@@ -174,7 +179,9 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 void steppers_off(int sig)
 {
 	spi_transfer(spi_fd, 0);
+	running = false;
 }
+
 
 int main (int argc, const char* argv[])
 {
@@ -226,7 +233,7 @@ int main (int argc, const char* argv[])
 	fputs("\033[?25l", stderr);
 	vidi_request_frame(&cam);
 
-	while (1)
+	while (running)
 	{
 		wait_frame(&cam, frame);
 
@@ -254,8 +261,8 @@ int main (int argc, const char* argv[])
 
 			int delta_idx = max(diff[r][c], 0) / 10;
 			int idx = grey / 10;
-			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
-			display[r][c] = spectrum[max(0, delta_idx)];
+			display[r][c] = spectrum[max(0, idx - delta_idx)];;
+			//display[r][c] = spectrum[max(0, delta_idx)];
 
 			if (delta_idx >= 1)
 			{
@@ -346,6 +353,8 @@ int main (int argc, const char* argv[])
 		frame_count++;
 		memcpy(last_frame, frame, sizeof(frame));
 	}
+
+	spi_transfer(spi_fd, 0);
 
 	return 0;
 }
