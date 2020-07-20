@@ -94,10 +94,10 @@ int main (int argc, const char* argv[])
 	sigaction(SIGINT, &action, NULL);
 	sigaction(SIGABRT, &action, NULL);
 
-	pixel_t last_frame[H][W] = {};
 	pixel_t frame[H][W] = {};
 	uint8_t diff[DS_H][DS_W] = {};
 	uint8_t ds_frame[DS_H][DS_W] = {};
+	uint8_t ds_last_frame[DS_H][DS_W] = {};
 	uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
 	char display[DS_H][DS_W] = {};
 
@@ -129,23 +129,22 @@ int main (int argc, const char* argv[])
 		// process
 		float com_x = 0, com_y = 0;
 		int com_points = 0;
-		const int dr = H / DS_H;
-		const int dc = W / DS_W;
 
+		// down sample frame
+		frame_downsample_uint8(
+			(point_t) { DS_H, DS_W }, ds_frame,
+			(point_t) { H, W }, frame);
 
-		// down sample frame, compute center of mass
+		// compute center of mass
 		for (int r = 0; r < DS_H; r++)
 		for (int c = 0; c < DS_W; c++)
 		{
-			int ri = r * dr, ci = c * dc;
-			int last_grey = last_frame[ri][ci].Y;
-			int grey = frame[ri][ci].Y;
-			int delta = max(abs(grey-last_grey) - 16, 0);
-			diff[r][c] = delta;
+			int last_grey = ds_last_frame[r][c];
+			int grey = ds_frame[r][c];
+			diff[r][c] = max(abs(grey-last_grey) - 16, 0);
 
 			int delta_idx = max(diff[r][c], 0) / 10;
 			int idx = grey / 10;
-			ds_frame[r][c] = grey;
 			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
 			display[r][c] = spectrum[max(0, delta_idx)];
 			//display[r][c] = spectrum[grey / 23];
@@ -186,18 +185,21 @@ int main (int argc, const char* argv[])
 			(win_t) {{}, { DS_H, DS_W }}
 		);
 
-		for (int i = 0; i < 2; i++)
-		for (int j = 0; j < 2; j++)
-		{
-			display[(int)targ_y+j][(int)targ_x+i] = '#';
-			display[DS_H >> 1][DS_W >> 1] = '+';
+		{ // drawing markers for visualization
+			for (int i = 0; i < 2; i++)
+			for (int j = 0; j < 2; j++)
+			{
+				display[(int)targ_y+j][(int)targ_x+i] = '#';
+				display[DS_H >> 1][DS_W >> 1] = '+';
+			}
+
+			for (int i = 0; i < FEAT_SIZE; i++)
+			for (int j = 0; j < FEAT_SIZE_H; j++)
+			{
+				display[match.r+j][match.c+i] = '@';
+			}			
 		}
 
-		for (int i = 0; i < FEAT_SIZE; i++)
-		for (int j = 0; j < FEAT_SIZE_H; j++)
-		{
-			display[match.r+j][match.c+i] = '@';
-		}
 
 		if (rows_drawn > 0)
 		{ // Erase the previously drawn rows
@@ -277,7 +279,7 @@ int main (int argc, const char* argv[])
 
 		if (frame_wait > 0) { frame_wait--; }
 		frame_count++;
-		memcpy(last_frame, frame, sizeof(frame));
+		memcpy(ds_last_frame, frame, sizeof(frame));
 	}
 
 	spi_transfer(spi_fd, 0);
@@ -315,12 +317,9 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		printf("Expected diff: %f\n", expected_diff);
 
 		// downsample the frame
-		for (int r = 0; r < DS_H; r++)
-		for (int c = 0; c < DS_W; c++)
-		{
-			int ri = r * dr, ci = c * dc;
-			down_sampled[r][c] = frame[ri][ci].Y;
-		}
+		frame_downsample_uint8(
+			(point_t) { DS_H, DS_W }, down_sampled,
+			(point_t) { H, W }, frame);
 
 		// store the feature
 		frame_copy_uint8(
@@ -361,12 +360,9 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		printf("frames_per_step: %f\n", cal.frames_per_step);
 
 		// downsample the frame
-		for (int r = 0; r < DS_H; r++)
-		for (int c = 0; c < DS_W; c++)
-		{
-			int ri = r * dr, ci = c * dc;
-			down_sampled[r][c] = frame[ri][ci].Y;
-		}
+		frame_downsample_uint8(
+			(point_t) { DS_H, DS_W }, down_sampled,
+			(point_t) { H, W }, frame);
 
 		// find the best feature
 		match_t match = match_feature(
