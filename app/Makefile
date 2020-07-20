@@ -2,7 +2,7 @@ TARG=$(shell gcc -dumpmachine)
 
 SRCS=$(wildcard src/*.c)
 OBJS=$(patsubst %.c,%.c.o,$(SRCS))
-CFLAGS+=-g -O1
+CFLAGS+=-g -O0
 LINK+=-lm
 INC=-Ideps/vidi.h/inc
 
