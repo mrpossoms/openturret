@@ -20,8 +20,8 @@
 
 #define W (640)
 #define H (480)
-#define DS_W (256)
-#define DS_H (64)
+#define DS_W (128)
+#define DS_H (32)
 #define FEAT_SIZE 9
 #define FEAT_SIZE_H ((FEAT_SIZE - 1) >> 1)
 
@@ -107,7 +107,6 @@ int main (int argc, const char* argv[])
 	float targ_dx = 0, targ_dy = 0; 
 	int frame_wait = 4;
 	int frame_count = 0;
-	int error_time = 0;
 
 	cal_t cal = calibrate(&cam, spi_fd);
 	spi_transfer(spi_fd, 0);
@@ -141,13 +140,13 @@ int main (int argc, const char* argv[])
 		{
 			int last_grey = ds_last_frame[r][c];
 			int grey = ds_frame[r][c];
-			diff[r][c] = max(abs(grey-last_grey) - 16, 0);
+			diff[r][c] = max(abs(grey-last_grey) - 8, 0);
 
 			int delta_idx = max(diff[r][c], 0) / 10;
 			int idx = grey / 10;
 			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
 			display[r][c] = spectrum[max(0, delta_idx)];
-			//display[r][c] = spectrum[grey / 23];
+			display[r][c] = spectrum[grey / 23];
 
 			if (delta_idx >= 1)
 			{
@@ -157,14 +156,14 @@ int main (int argc, const char* argv[])
 			}
 		}
 
-		if (com_points > 0 && frame_wait <= 0)
+		if (com_points > 5)// && frame_wait <= 0)
 		{
 			float last_targ_x = targ_x;
 			float last_targ_y = targ_y;
 			float x = com_x / com_points;
 			float y = com_y / com_points;
 
-			const float power = 2;
+			const float power = 7;
 
 			if (targ_x == (DS_H >> 1) && targ_y == (DS_H >> 1))
 			{
@@ -177,6 +176,10 @@ int main (int argc, const char* argv[])
 
 			float dx = targ_x - last_targ_x, dy = targ_y - last_targ_y;
 			targ_dx = dx; targ_dy = dy;
+		}
+		else
+		{
+			targ_dx = targ_dy = 0;
 		}
 
 		match_t match = match_feature(
@@ -193,11 +196,12 @@ int main (int argc, const char* argv[])
 				display[DS_H >> 1][DS_W >> 1] = '+';
 			}
 
+
 			for (int i = 0; i < FEAT_SIZE; i++)
 			for (int j = 0; j < FEAT_SIZE_H; j++)
 			{
 				display[match.r+j][match.c+i] = '@';
-			}			
+			}
 		}
 
 
@@ -214,21 +218,19 @@ int main (int argc, const char* argv[])
 		int disp_yaw = yaw, disp_pitch = pitch;
 		//if (com_points > 0 && frame_wait <= 0)
 
-		error_time += sqrt(yaw * yaw + pitch * pitch);
+		float error = sqrt(yaw * yaw + pitch * pitch);
 		float delta = sqrt(targ_dx * targ_dx + targ_dy * targ_dy);
 
-		if (frame_wait <= 0 && error_time > 10)// && delta < 1)
+		if (frame_wait <= 0 && error > 0 && delta < 2)
 		{
 			const size_t mid_w = DS_W >> 1;
 			const size_t mid_h = DS_H >> 1;
 
 			if (yaw || pitch)
 			{
-				targ_x = mid_w;
-				targ_y = mid_h;
+				//targ_x = mid_w;
+				//targ_y = mid_h;
 			}
-
-			error_time = 0;
 
 			// extract a feature from what's been marked as the target
 			frame_copy_uint8(
@@ -236,7 +238,7 @@ int main (int argc, const char* argv[])
 				feature,
 				DS_H, DS_W,
 				ds_frame,
-				(win_t){ mid_h, mid_w }
+				(win_t){ targ_y - FEAT_SIZE_H, targ_x - FEAT_SIZE_H }
 			);
 
 			do
@@ -259,7 +261,7 @@ int main (int argc, const char* argv[])
 
 		// display
 		if (frame_wait > 0) { fprintf(stderr, "\033[31m"); }
-		const int sf = 2; // scale factor
+		const int sf = 1; // scale factor
 		for (int r = 0; r < DS_H / sf; r++)
 		{
 			for (int c = 0; c < DS_W / (sf); c++)
@@ -272,14 +274,14 @@ int main (int argc, const char* argv[])
 		}
 		fprintf(stderr, "\033[0m");
 
-		printf("COM points: %d error_time %d frame_wait: %d   \n", com_points, error_time, frame_wait);
-		printf("COM (%d, %d) targ∆: %f\n", (int)targ_x, (int)targ_y, delta);
+		printf("COM points: %d error %0.3f frame_wait: %d   \n", com_points, error, frame_wait);
+		printf("COM (%d, %d) targ∆: %0.3f, match_score: %0.3f\n", (int)targ_x, (int)targ_y, delta, match.score);
 		printf("yaw, pitch: (%d, %d) frames: %d \n", disp_yaw, disp_pitch, frame_count);
 		rows_drawn+=3;
 
 		if (frame_wait > 0) { frame_wait--; }
 		frame_count++;
-		memcpy(ds_last_frame, frame, sizeof(frame));
+		memcpy(ds_last_frame, ds_frame, sizeof(frame));
 	}
 
 	spi_transfer(spi_fd, 0);
@@ -299,6 +301,16 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	const int dr = H / DS_H;
 	const int dc = W / DS_W;
 
+	{ // load cal if it exists
+		int fd = open("ot.cal", O_RDONLY);
+		if (sizeof(cal) == read(fd, &cal, sizeof(cal)))
+		{
+			close(fd);
+			return cal;
+		}
+		close(fd);
+	}
+
 	const int steps = 1;
 	for(int si = steps; si--;)
 	{
@@ -309,11 +321,14 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 			frame_copy_pixel(H, W, last_frame, H, W, frame, (win_t){{}, {H, W}});
 			frame_copy_pixel(H, W, settle_frame, H, W, frame, (win_t){{}, {H, W}});
 			vidi_request_frame(cam); wait_frame(cam, frame);
-			if (i < 30)
-			expected_diff += frame_difference(H, W, last_frame, frame);
+			if (i < 10)
+			{
+				float diff = frame_difference(H, W, last_frame, frame);
+				expected_diff += diff; 
+			}
 		}
 
-		expected_diff /= 30;
+		expected_diff /= 10;
 		printf("Expected diff: %f\n", expected_diff);
 
 		// downsample the frame
@@ -344,6 +359,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		spi_transfer(spi_fd, control_byte(motor_steps, motor_steps, &yt, &pt));
 
 		// capture another frame (wait for a bit)
+		vidi_request_frame(cam); wait_frame(cam, frame);
 		int frames_waited = 1;
 		float frame_diff;
 		do
@@ -389,6 +405,12 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 
 	cal.steps_per_col /= steps;
 	cal.steps_per_row /= steps;
+
+	{ // save cal
+		int fd = open("ot.cal", O_WRONLY | O_CREAT);
+		write(fd, &cal, sizeof(cal));
+		close(fd);
+	}
 
 	return cal;
 }

@@ -57,7 +57,7 @@ void frame_downsample_uint8(
 	for (int c = 0; c < dst_size.c; c++)
 	{ // for each row and col of the down sampled frame
 		size_t sr = r * src_r_per_dst_r;
-		size_t sc = r * src_c_per_dst_c;
+		size_t sc = c * src_c_per_dst_c;
 		int avg_y = 0;
 
 		for (int ri = sr; ri < sr + src_r_per_dst_r; ri++)
