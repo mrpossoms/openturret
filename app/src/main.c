@@ -22,7 +22,7 @@
 #define H (480)
 #define DS_W (128)
 #define DS_H (32)
-#define FEAT_SIZE 11
+#define FEAT_SIZE 9
 #define FEAT_SIZE_H ((FEAT_SIZE - 1) >> 1)
 
 int spi_fd;
@@ -257,11 +257,8 @@ int main (int argc, char* const argv[])
 		float error = sqrt(yaw * yaw + pitch * pitch);
 		float delta = sqrt(targ_dx * targ_dx + targ_dy * targ_dy);
 
-		if (frame_wait <= 0 && error > 0 && delta < 2)
+		if (frame_wait <= 0 && error > 0 && delta < 2 && feature_set)
 		{
-			const size_t mid_w = DS_W >> 1;
-			const size_t mid_h = DS_H >> 1;
-
 			//if (match.score > 1000)
 			{
 
