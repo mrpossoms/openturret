@@ -22,7 +22,7 @@
 #define H (480)
 #define DS_W (128)
 #define DS_H (32)
-#define FEAT_SIZE 9
+#define FEAT_SIZE 11
 #define FEAT_SIZE_H ((FEAT_SIZE - 1) >> 1)
 
 int spi_fd;
@@ -78,7 +78,7 @@ int main (int argc, char* const argv[])
 	vidi_cfg_t cam = {
 		.width = W,
 		.height = H,
-		.frames_per_sec = 15,
+		.frames_per_sec = 30,
 		.path = argv[1],
 		.pixel_format = V4L2_PIX_FMT_YUYV
 	};
@@ -125,6 +125,7 @@ int main (int argc, char* const argv[])
 	uint8_t ds_last_frame[DS_H][DS_W] = {};
 	match_t last_match = {};
 	uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
+	bool feature_set = false;
 	char display[DS_H][DS_W] = {};
 
 	int rows_drawn = 0;
@@ -189,51 +190,67 @@ int main (int argc, char* const argv[])
 			com_x /= com_points;
 			com_y /= com_points;
 
-			const float power = 7;
+			{ // lpf on the target coordinate
+				const float power = 5;
 
-			if (targ_x == (DS_H >> 1) && targ_y == (DS_H >> 1))
-			{
-				targ_x = com_x;
-				targ_y = com_y;
+				if (targ_x == (DS_H >> 1) && targ_y == (DS_H >> 1))
+				{
+					targ_x = com_x;
+					targ_y = com_y;
+				}
+
+				targ_x = (com_x + targ_x * (power - 1.f)) / power;
+				targ_y = (com_y + targ_y * (power - 1.f)) / power;		
 			}
-
-			targ_x = (com_x + targ_x * (power - 1.f)) / power;
-			targ_y = (com_y + targ_y * (power - 1.f)) / power;		
 
 			float dx = targ_x - last_targ_x, dy = targ_y - last_targ_y;
 			targ_dx = dx; targ_dy = dy;
+			float targ_com_dist = sqrt(pow(targ_x - com_x, 2.0) + pow(targ_y - com_y, 2.0));
 
 			// extract a feature from what's been marked as the target
-			if (frame_wait <= 0 && com_points < 200)
-			frame_copy_uint8(
-				FEAT_SIZE, FEAT_SIZE,
-				feature,
-				DS_H, DS_W,
-				ds_frame,
-				(win_t){ com_y - FEAT_SIZE_H, com_x - FEAT_SIZE_H }
-			);
+			//if (frame_wait <= 0 && com_points < 200 && 
+			if(targ_com_dist < 3)
+			{
+				frame_copy_uint8(
+					FEAT_SIZE, FEAT_SIZE,
+					feature,
+					DS_H, DS_W,
+					ds_frame,
+					(win_t){ com_y - FEAT_SIZE_H, com_x - FEAT_SIZE_H }
+				);
+				feature_set = true;
+			}
+
 		}
 		else
 		{
 			targ_dx = targ_dy = 0;
 		}
 
-		match_t match = match_feature(
-			(point_t){ DS_H, DS_W }, ds_frame,
-			(point_t){ FEAT_SIZE, FEAT_SIZE }, feature,
-			(win_t) {{}, { DS_H, DS_W }}
-		);
+		match_t match = {
+			.score = -1,	
+		};
 
-		int dr = match.r - last_match.r, dc = match.c - last_match.c;
-		if (sqrtf(dr * dr + dc * dc) > 3)
+		if (feature_set)
 		{
-			match.score = -1;	
+			match = match_feature(
+				(point_t){ DS_H, DS_W }, ds_frame,
+				(point_t){ FEAT_SIZE, FEAT_SIZE }, feature,
+				(win_t) {{}, { DS_H, DS_W }}
+			);
+
+			int dr = match.r - last_match.r, dc = match.c - last_match.c;
+			if (sqrtf(dr * dr + dc * dc) > 10)
+			{
+				match.score = -1;	
+				feature_set = false;
+			}
+
+			last_match = match;
 		}
 
-		last_match = match;
-
-		int yaw = -(match.c - (DS_W >> 1)) * cal.steps_per_col;
-		int pitch = -(match.r - (DS_H >> 1)) * cal.steps_per_row;
+		int yaw = -((match.c + FEAT_SIZE_H) +  - (DS_W >> 1)) * cal.steps_per_col;
+		int pitch = -((match.r + FEAT_SIZE_H) - (DS_H >> 1)) * cal.steps_per_row;
 		int disp_yaw = yaw, disp_pitch = pitch;
 		//if (com_points > 0 && frame_wait <= 0)
 
@@ -244,12 +261,6 @@ int main (int argc, char* const argv[])
 		{
 			const size_t mid_w = DS_W >> 1;
 			const size_t mid_h = DS_H >> 1;
-
-			if (yaw || pitch)
-			{
-				//targ_x = mid_w;
-				//targ_y = mid_h;
-			}
 
 			//if (match.score > 1000)
 			{
@@ -280,6 +291,7 @@ int main (int argc, char* const argv[])
 			{
 				display[(int)targ_y+j][(int)targ_x+i] = '#';
 				display[DS_H >> 1][DS_W >> 1] = '+';
+				display[(int)com_y+j][(int)com_x+i] = '?';
 			}
 
 
@@ -324,7 +336,7 @@ int main (int argc, char* const argv[])
 
 		if (frame_wait > 0) { frame_wait--; }
 		frame_count++;
-		memcpy(ds_last_frame, ds_frame, sizeof(frame));
+		memcpy(ds_last_frame, ds_frame, sizeof(ds_last_frame));
 	}
 
 	spi_transfer(spi_fd, 0);
@@ -450,7 +462,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 	cal.steps_per_row /= steps;
 
 	{ // save cal
-		int fd = open("ot.cal", O_WRONLY | O_CREAT);
+		int fd = open("ot.cal", O_WRONLY | O_CREAT, 0644);
 		write(fd, &cal, sizeof(cal));
 		close(fd);
 	}
