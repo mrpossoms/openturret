@@ -27,6 +27,7 @@
 
 int spi_fd;
 bool running = true;
+bool motors_enabled = true;
 
 uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
 {
@@ -63,8 +64,14 @@ void steppers_off(int sig)
 }
 
 
-int main (int argc, const char* argv[])
+int main (int argc, char* const argv[])
 {
+	if (argc < 2)
+	{
+		fprintf(stderr, "video device neede: e.g. /dev/video0\n");
+		return -1;
+	}
+
 	// define a configuration object for a camera, here
 	// you can request frame size, pixel format, frame rate
 	// and the camera which you wish to use.
@@ -80,6 +87,24 @@ int main (int argc, const char* argv[])
 	// device, but can also be used to reconfigure an
 	// existing vidi_cfg_t camera instance.
 	assert(0 == vidi_config(&cam));
+
+	int opt = 0;
+	while ((opt = getopt(argc, argv, "m:")) > -1)
+	{
+		switch(opt)
+		{
+			case 'm':
+			{
+				motors_enabled = atoi(optarg);
+			} break;
+
+		}
+	}
+
+	int control = V4L2_EXPOSURE_MANUAL;
+	ioctl(cam.sys.fd, VIDIOC_S_CTRL, &control);
+	int ctrl[] = { V4L2_CID_EXPOSURE, 33333 };
+	ioctl(cam.sys.fd, VIDIOC_S_CTRL, ctrl);
 
 	spi_fd = open("/dev/spidev0.0", O_RDWR);
 
@@ -98,6 +123,7 @@ int main (int argc, const char* argv[])
 	uint8_t diff[DS_H][DS_W] = {};
 	uint8_t ds_frame[DS_H][DS_W] = {};
 	uint8_t ds_last_frame[DS_H][DS_W] = {};
+	match_t last_match = {};
 	uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
 	char display[DS_H][DS_W] = {};
 
@@ -160,22 +186,32 @@ int main (int argc, const char* argv[])
 		{
 			float last_targ_x = targ_x;
 			float last_targ_y = targ_y;
-			float x = com_x / com_points;
-			float y = com_y / com_points;
+			com_x /= com_points;
+			com_y /= com_points;
 
 			const float power = 7;
 
 			if (targ_x == (DS_H >> 1) && targ_y == (DS_H >> 1))
 			{
-				targ_x = x;
-				targ_y = y;
+				targ_x = com_x;
+				targ_y = com_y;
 			}
 
-			targ_x = (x + targ_x * (power - 1.f)) / power;
-			targ_y = (y + targ_y * (power - 1.f)) / power;		
+			targ_x = (com_x + targ_x * (power - 1.f)) / power;
+			targ_y = (com_y + targ_y * (power - 1.f)) / power;		
 
 			float dx = targ_x - last_targ_x, dy = targ_y - last_targ_y;
 			targ_dx = dx; targ_dy = dy;
+
+			// extract a feature from what's been marked as the target
+			if (frame_wait <= 0 && com_points < 200)
+			frame_copy_uint8(
+				FEAT_SIZE, FEAT_SIZE,
+				feature,
+				DS_H, DS_W,
+				ds_frame,
+				(win_t){ com_y - FEAT_SIZE_H, com_x - FEAT_SIZE_H }
+			);
 		}
 		else
 		{
@@ -188,33 +224,16 @@ int main (int argc, const char* argv[])
 			(win_t) {{}, { DS_H, DS_W }}
 		);
 
-		{ // drawing markers for visualization
-			for (int i = 0; i < 2; i++)
-			for (int j = 0; j < 2; j++)
-			{
-				display[(int)targ_y+j][(int)targ_x+i] = '#';
-				display[DS_H >> 1][DS_W >> 1] = '+';
-			}
-
-
-			for (int i = 0; i < FEAT_SIZE; i++)
-			for (int j = 0; j < FEAT_SIZE_H; j++)
-			{
-				display[match.r+j][match.c+i] = '@';
-			}
+		int dr = match.r - last_match.r, dc = match.c - last_match.c;
+		if (sqrtf(dr * dr + dc * dc) > 3)
+		{
+			match.score = -1;	
 		}
 
+		last_match = match;
 
-		if (rows_drawn > 0)
-		{ // Erase the previously drawn rows
-			static char move_up[16] = {};
-			sprintf(move_up, "\033[%dA", rows_drawn);
-			fprintf(stderr, "%s", move_up);
-			rows_drawn = 0;
-		}
-
-		int yaw = -(targ_x - (DS_W >> 1)) * cal.steps_per_col;
-		int pitch = -(targ_y - (DS_H >> 1)) * cal.steps_per_row;
+		int yaw = -(match.c - (DS_W >> 1)) * cal.steps_per_col;
+		int pitch = -(match.r - (DS_H >> 1)) * cal.steps_per_row;
 		int disp_yaw = yaw, disp_pitch = pitch;
 		//if (com_points > 0 && frame_wait <= 0)
 
@@ -232,20 +251,16 @@ int main (int argc, const char* argv[])
 				//targ_y = mid_h;
 			}
 
-			// extract a feature from what's been marked as the target
-			frame_copy_uint8(
-				FEAT_SIZE, FEAT_SIZE,
-				feature,
-				DS_H, DS_W,
-				ds_frame,
-				(win_t){ targ_y - FEAT_SIZE_H, targ_x - FEAT_SIZE_H }
-			);
+			//if (match.score > 1000)
+			{
+
+			}
 
 			do
 			{
 				int yaw_ticks, pitch_ticks;
 				uint8_t ctrl_byte = control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks);
-				spi_transfer(spi_fd, ctrl_byte);
+				if (motors_enabled) { spi_transfer(spi_fd, ctrl_byte); }
 
 				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * cal.frames_per_step * 1;
 				yaw -= yaw_ticks;
@@ -258,6 +273,34 @@ int main (int argc, const char* argv[])
 			// turn steppers off to save energy
 			spi_transfer(spi_fd, 0);
 		}
+
+		{ // drawing markers for visualization
+			for (int i = 0; i < 2; i++)
+			for (int j = 0; j < 2; j++)
+			{
+				display[(int)targ_y+j][(int)targ_x+i] = '#';
+				display[DS_H >> 1][DS_W >> 1] = '+';
+			}
+
+
+			if (match.score >= 0)
+			for (int i = 0; i < FEAT_SIZE; i++)
+			for (int j = 0; j < FEAT_SIZE_H; j++)
+			{
+				display[match.r+j][match.c+i] = '@';
+			}
+		}
+
+
+		if (rows_drawn > 0)
+		{ // Erase the previously drawn rows
+			static char move_up[16] = {};
+			sprintf(move_up, "\033[%dA", rows_drawn);
+			fprintf(stderr, "%s", move_up);
+			rows_drawn = 0;
+		}
+
+
 
 		// display
 		if (frame_wait > 0) { fprintf(stderr, "\033[31m"); }

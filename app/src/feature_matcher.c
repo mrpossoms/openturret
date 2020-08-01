@@ -13,12 +13,13 @@ match_t match_feature(const point_t frame_size,
 	for (int r = feat_hr; r < frame_size.r - feat_hr; r++)
 	for (int c = feat_hc; c < frame_size.c - feat_hc; c++)
 	{
-		int score = 0;
+		float score = 0;
 		for (int i = -feat_hr; i <= feat_hr; i++)
 		for (int j = -feat_hc; j <= feat_hc; j++)
 		{
-			score += abs(feature[i + feat_hr][j + feat_hc] - frame[r + i][c + j]);
+			score += fabsf(feature[i + feat_hr][j + feat_hc] - frame[r + i][c + j]) / 255.f;
 		}
+		score /= (feat_size.r * feat_size.c);
 
 		if (score < match.score)
 		{
