@@ -134,6 +134,7 @@ int main (int argc, char* const argv[])
 	float targ_dx = 0, targ_dy = 0; 
 	int frame_wait = 4;
 	int frame_count = 0;
+	mapping_t frame_mapping = frame_mapping_1to1;
 
 	cal_t cal = calibrate(&cam, spi_fd);
 	spi_transfer(spi_fd, 0);
@@ -157,9 +158,12 @@ int main (int argc, char* const argv[])
 		int com_points = 0;
 
 		// down sample frame
+		uint8_t temp_ds_frame[DS_H][DS_W];
 		frame_downsample_uint8(
-			(point_t) { DS_H, DS_W }, ds_frame,
+			(point_t) { DS_H, DS_W }, temp_ds_frame,
 			(point_t) { H, W }, frame);
+
+		frame_mapping((point_t){DS_H, DS_W}, temp_ds_frame, ds_frame);
 
 		// compute center of mass
 		for (int r = 0; r < DS_H; r++)
@@ -375,7 +379,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 			vidi_request_frame(cam); wait_frame(cam, frame);
 			if (i < 10)
 			{
-				float diff = frame_difference(H, W, last_frame, frame);
+				float diff = frame_difference((point_t){H, W}, last_frame, frame);
 				expected_diff += diff; 
 			}
 		}
@@ -417,7 +421,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 		do
 		{
 			vidi_request_frame(cam); wait_frame(cam, frame);
-			frame_diff = frame_difference(H, W, settle_frame, frame);
+			frame_diff = frame_difference((point_t){H, W}, settle_frame, frame);
 			frame_copy_pixel(H, W, settle_frame, H, W, frame, (win_t){{}, {H, W}});
 			printf("difference: %f\n", frame_diff);
 			frames_waited++;

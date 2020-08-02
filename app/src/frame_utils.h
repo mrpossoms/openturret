@@ -2,17 +2,28 @@
 #define _OT_FRAME_UTILS_H_
 #include "structs.h"
 
-float frame_difference(const size_t r, const size_t c, pixel_t f0[r][c], pixel_t f1[r][c])
+typedef void (*mapping_t)(point_t dims, uint8_t from[dims.r][dims.c], uint8_t to[dims.r][dims.c]);
+
+void frame_mapping_1to1(point_t dims, uint8_t from[dims.r][dims.c], uint8_t to[dims.r][dims.c])
+{
+	for (size_t r = 0; r < dims.r; r++)
+	for (size_t c = 0; c < dims.c; c++)
+	{
+		to[r][c] = from [r][c];
+	}
+}
+
+float frame_difference(point_t dims, pixel_t f0[dims.r][dims.c], pixel_t f1[dims.r][dims.c])
 {
 	float diff = 0;	
 
-	for (size_t ri = 0; ri < r; ri++)
-	for (size_t ci = 0; ci < c; ci++)
+	for (size_t ri = 0; ri < dims.r; ri++)
+	for (size_t ci = 0; ci < dims.c; ci++)
 	{
 		diff += fabsf(f0[ri][ci].Y - f1[ri][ci].Y);
 	}
 
-	return diff / (r * c);
+	return diff / (dims.r * dims.c);
 }
 
 void frame_copy_pixel(
