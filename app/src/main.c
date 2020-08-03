@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <time.h>
 #include <math.h>
 
 #include "structs.h"
@@ -143,8 +144,11 @@ int main (int argc, char* const argv[])
 	fputs("\033[?25l", stderr);
 	vidi_request_frame(&cam);
 
+	time_t last_sec = time(NULL);
+	int last_sec_frames = 0, fps = 0;
 	while (running)
 	{
+		time_t now = time(NULL);
 		wait_frame(&cam, frame);
 
 		// request the camera to capture a frame
@@ -187,7 +191,7 @@ int main (int argc, char* const argv[])
 			}
 		}
 
-		if (com_points > 5)// && frame_wait <= 0)
+		if (com_points > 3)// && frame_wait <= 0)
 		{
 			float last_targ_x = targ_x;
 			float last_targ_y = targ_y;
@@ -212,8 +216,7 @@ int main (int argc, char* const argv[])
 			float targ_com_dist = sqrt(pow(targ_x - com_x, 2.0) + pow(targ_y - com_y, 2.0));
 
 			// extract a feature from what's been marked as the target
-			//if (frame_wait <= 0 && com_points < 200 && 
-			if(targ_com_dist < 3)
+			if (frame_wait <= 0 && com_points < 200 && targ_com_dist < 3)
 			{
 				frame_copy_uint8(
 					FEAT_SIZE, FEAT_SIZE,
@@ -313,7 +316,12 @@ int main (int argc, char* const argv[])
 			rows_drawn = 0;
 		}
 
-
+		if (now > last_sec)
+		{
+			fps = frame_count - last_sec_frames;
+			last_sec_frames = frame_count;
+			last_sec = now;
+		}
 
 		// display
 		if (frame_wait > 0) { fprintf(stderr, "\033[31m"); }
@@ -331,8 +339,8 @@ int main (int argc, char* const argv[])
 		fprintf(stderr, "\033[0m");
 
 		printf("COM points: %d error %0.3f frame_wait: %d   \n", com_points, error, frame_wait);
-		printf("COM (%d, %d) targ∆: %0.3f, match_score: %0.3f\n", (int)targ_x, (int)targ_y, delta, match.score);
-		printf("yaw, pitch: (%d, %d) frames: %d \n", disp_yaw, disp_pitch, frame_count);
+		printf("COM (%d, %d) targ∆: %0.3f, match_score: %0.3f \n", (int)targ_x, (int)targ_y, delta, match.score);
+		printf("yaw, pitch: (%d, %d) frames: %d fps: %d \n", disp_yaw, disp_pitch, frame_count, fps);
 		rows_drawn+=3;
 
 		if (frame_wait > 0) { frame_wait--; }
