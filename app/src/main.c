@@ -15,9 +15,9 @@
 #include "structs.h"
 #include "feature_matcher.h"
 #include "frame_utils.h"
-#include "spi.h"
 #include "utils.h"
 #include "vidi.h"
+#include "motor_control.h"
 
 #define W (640)
 #define H (480)
@@ -29,19 +29,6 @@
 int spi_fd;
 bool running = true;
 bool motors_enabled = true;
-
-uint8_t control_byte(int yaw, int pitch, int* yaw_ticks, int* pitch_ticks)
-{
-	uint8_t ctrl_byte = 0;
-
-	if (yaw < 0) { ctrl_byte |= 0x80; }
-	*yaw_ticks = clamp(yaw, -7, 7);
-
-	if (pitch < 0) { ctrl_byte |= 0x08; }
-	*pitch_ticks = clamp(pitch, -7, 7);
-
-	return ctrl_byte | ((abs(*yaw_ticks) << 4) | abs(*pitch_ticks));
-}
 
 void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 {
@@ -58,18 +45,11 @@ void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 
 cal_t calibrate(vidi_cfg_t* cam, int spi_fd);
 
-void steppers_off(int sig)
-{
-	spi_transfer(spi_fd, 0);
-	running = false;
-}
-
-
 int main (int argc, char* const argv[])
 {
 	if (argc < 2)
 	{
-		fprintf(stderr, "video device neede: e.g. /dev/video0\n");
+		fprintf(stderr, "video device needed: e.g. /dev/video0\n");
 		return -1;
 	}
 
@@ -107,15 +87,10 @@ int main (int argc, char* const argv[])
 	int ctrl[] = { V4L2_CID_EXPOSURE, 33333 };
 	ioctl(cam.sys.fd, VIDIOC_S_CTRL, ctrl);
 
-	spi_fd = open("/dev/spidev0.0", O_RDWR);
-
-	if (spi_fd >= 0)
-	{
-		spi_config(spi_fd);
-	}
+	spi_fd = motor_control_init("/dev/spidev0.0");
 
 	struct sigaction action = {
-		.sa_handler = steppers_off,
+		.sa_handler = motor_control_off,
 	};
 	sigaction(SIGINT, &action, NULL);
 	sigaction(SIGABRT, &action, NULL);
@@ -138,7 +113,7 @@ int main (int argc, char* const argv[])
 	mapping_t frame_mapping = frame_mapping_1to1;
 
 	cal_t cal = calibrate(&cam, spi_fd);
-	spi_transfer(spi_fd, 0);
+	motor_control_off();
 	fprintf(stderr, "steps_per_row: %f, steps_per_col: %f\n", cal.steps_per_row, cal.steps_per_col);
 
 	fputs("\033[?25l", stderr);
@@ -274,8 +249,10 @@ int main (int argc, char* const argv[])
 			do
 			{
 				int yaw_ticks, pitch_ticks;
-				uint8_t ctrl_byte = control_byte(yaw, pitch, &yaw_ticks, &pitch_ticks);
-				if (motors_enabled) { spi_transfer(spi_fd, ctrl_byte); }
+				if (motors_enabled) 
+				{
+					motor_control(yaw, pitch, &yaw_ticks, &pitch_ticks);
+				}
 
 				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * cal.frames_per_step * 1;
 				yaw -= yaw_ticks;
@@ -286,7 +263,7 @@ int main (int argc, char* const argv[])
 		else
 		{
 			// turn steppers off to save energy
-			spi_transfer(spi_fd, 0);
+			motor_control_off();
 		}
 
 		{ // drawing markers for visualization
@@ -348,7 +325,7 @@ int main (int argc, char* const argv[])
 		memcpy(ds_last_frame, ds_frame, sizeof(ds_last_frame));
 	}
 
-	spi_transfer(spi_fd, 0);
+	motor_control_off();
 
 	return 0;
 }
@@ -420,7 +397,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 
 		// move on the yaw and pitch axis
 		int pt, yt;
-		spi_transfer(spi_fd, control_byte(motor_steps, motor_steps, &yt, &pt));
+		motor_control(motor_steps, motor_steps, &yt, &pt);
 
 		// capture another frame (wait for a bit)
 		vidi_request_frame(cam); wait_frame(cam, frame);
@@ -453,7 +430,7 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 			(win_t){{ 0, 0 }, { DS_H, DS_W }}  
 		);
 
-		spi_transfer(spi_fd, control_byte(-motor_steps, -motor_steps, &yt, &pt));
+		motor_control(-motor_steps, -motor_steps, &yt, &pt);
 		fprintf(stderr, "best_score: %f, coord: (%d, %d)\n", match.score, match.r, match.c);
 
 		// let the video stream settle
@@ -472,10 +449,9 @@ cal_t calibrate(vidi_cfg_t* cam, int spi_fd)
 
 	{ // save cal
 		int fd = open("ot.cal", O_WRONLY | O_CREAT, 0644);
-		write(fd, &cal, sizeof(cal));
+		assert(sizeof(cal) == write(fd, &cal, sizeof(cal)));
 		close(fd);
 	}
 
 	return cal;
 }
-
