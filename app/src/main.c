@@ -69,6 +69,13 @@ int main (int argc, char* const argv[])
 	// existing vidi_cfg_t camera instance.
 	assert(0 == vidi_config(&cam));
 
+	int control = V4L2_EXPOSURE_MANUAL;
+	ioctl(cam.sys.fd, VIDIOC_S_CTRL, &control);
+	int ctrl[] = { V4L2_CID_EXPOSURE, 33333 };
+	ioctl(cam.sys.fd, VIDIOC_S_CTRL, ctrl);
+
+	spi_fd = motor_control_init("/dev/spidev0.0");
+
 	int opt = 0;
 	while ((opt = getopt(argc, argv, "m:")) > -1)
 	{
@@ -82,12 +89,6 @@ int main (int argc, char* const argv[])
 		}
 	}
 
-	int control = V4L2_EXPOSURE_MANUAL;
-	ioctl(cam.sys.fd, VIDIOC_S_CTRL, &control);
-	int ctrl[] = { V4L2_CID_EXPOSURE, 33333 };
-	ioctl(cam.sys.fd, VIDIOC_S_CTRL, ctrl);
-
-	spi_fd = motor_control_init("/dev/spidev0.0");
 
 	struct sigaction action = {
 		.sa_handler = motor_control_off,
@@ -241,11 +242,6 @@ int main (int argc, char* const argv[])
 
 		if (frame_wait <= 0 && error > 0 && delta < 2 && feature_set)
 		{
-			//if (match.score > 1000)
-			{
-
-			}
-
 			do
 			{
 				int yaw_ticks, pitch_ticks;

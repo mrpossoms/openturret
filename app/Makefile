@@ -1,4 +1,6 @@
-TARG=$(shell gcc -dumpmachine)
+TARG=$(shell ${CC} -dumpmachine)
+USER=pi
+HOSTNAME=ot
 
 SRCS=$(wildcard src/*.c)
 OBJS=$(patsubst %.c,%.c.o,$(SRCS))
@@ -19,8 +21,13 @@ bin/$(TARG)/tracker: $(OBJS)
 all: bin/$(TARG)/tracker
 	@echo "Built tracker"
 
+flash: bin/$(TARG)/tracker
+	scp $< $(USER)@$(HOSTNAME):~
 
-.PHONY: clean
+run: flash
+	ssh $(USER)@$(HOSTNAME) "./tracker /dev/video0"
+
+.PHONY: clean flash run
 clean: 
 	rm src/*.o
 	rm -rf bin
