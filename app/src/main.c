@@ -18,6 +18,7 @@
 #include "utils.h"
 #include "vidi.h"
 #include "motor_control.h"
+#include "display.h"
 
 #define W (640)
 #define H (480)
@@ -29,6 +30,7 @@
 int spi_fd;
 bool running = true;
 bool motors_enabled = true;
+bool display_debug = false;
 
 void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 {
@@ -41,7 +43,15 @@ void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
 		memcpy(frame[r], raw_frame + (r * row_size), row_size);
 	}
 }
- 
+
+static void stop(int sig)
+{
+	if (sig == SIGINT)
+	{
+		running = false;
+	}
+
+} 
 
 cal_t calibrate(vidi_cfg_t* cam, int spi_fd);
 
@@ -77,7 +87,7 @@ int main (int argc, char* const argv[])
 	spi_fd = motor_control_init("/dev/spidev0.0");
 
 	int opt = 0;
-	while ((opt = getopt(argc, argv, "m:")) > -1)
+	while ((opt = getopt(argc, argv, "m:d")) > -1)
 	{
 		switch(opt)
 		{
@@ -86,29 +96,44 @@ int main (int argc, char* const argv[])
 				motors_enabled = atoi(optarg);
 			} break;
 
+			case 'd':
+			{
+				display_debug = true;
+				display_init();
+			}
 		}
 	}
 
+	signal(SIGINT, stop);
+	signal(SIGABRT, stop);
 
-	struct sigaction action = {
-		.sa_handler = motor_control_off,
-	};
-	sigaction(SIGINT, &action, NULL);
-	sigaction(SIGABRT, &action, NULL);
-
-	pixel_t frame[H][W] = {};
-	uint8_t diff[DS_H][DS_W] = {};
-	uint8_t ds_frame[DS_H][DS_W] = {};
-	uint8_t ds_last_frame[DS_H][DS_W] = {};
+	// frames
+	pixel_t frame[H][W] = {}; // raw frame from the camera
+	uint8_t diff[DS_H][DS_W] = {}; // down sampled grey difference between frames
+	uint8_t ds_frame[DS_H][DS_W] = {}; // down sampled grey frame
+	uint8_t ds_last_frame[DS_H][DS_W] = {}; // the last down sampled grey frame
+	
+	// features
 	match_t last_match = {};
 	uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
 	bool feature_set = false;
+	
+	// debug display buffer
 	char display[DS_H][DS_W] = {};
-
 	int rows_drawn = 0;
-	float targ_x = DS_W >> 1;
-	float targ_y = DS_H >> 1;
-	float targ_dx = 0, targ_dy = 0; 
+
+	// tracking
+	tracking_t track = {
+		.target = {
+			.coord = { DS_W >> 1, DS_H >> 1 },
+			.delta = { 0, 0 },
+		},
+		.com = {
+			.coord = { DS_W >> 1, DS_H >> 1 },
+			.points = 0,
+		}
+	};
+	
 	int frame_wait = 4;
 	int frame_count = 0;
 	mapping_t frame_mapping = frame_mapping_1to1;
@@ -117,25 +142,19 @@ int main (int argc, char* const argv[])
 	motor_control_off();
 	fprintf(stderr, "steps_per_row: %f, steps_per_col: %f\n", cal.steps_per_row, cal.steps_per_col);
 
-	fputs("\033[?25l", stderr);
 	vidi_request_frame(&cam);
 
-	time_t last_sec = time(NULL);
-	int last_sec_frames = 0, fps = 0;
+
 	while (running)
 	{
-		time_t now = time(NULL);
 		wait_frame(&cam, frame);
 
 		// request the camera to capture a frame
 		vidi_request_frame(&cam);
 
 
-		const char spectrum[] = " .,':;|[{+*x88ASDDBDFSDFSDBHGJFU";
-
-		// process
-		float com_x = 0, com_y = 0;
-		int com_points = 0;
+		track.com.coord = (vec2_t){};
+		track.com.points = 0;
 
 		// down sample frame
 		uint8_t temp_ds_frame[DS_H][DS_W];
@@ -145,7 +164,7 @@ int main (int argc, char* const argv[])
 
 		frame_mapping((point_t){DS_H, DS_W}, temp_ds_frame, ds_frame);
 
-		// compute center of mass
+		// compute center of motion
 		for (int r = 0; r < DS_H; r++)
 		for (int c = 0; c < DS_W; c++)
 		{
@@ -154,52 +173,47 @@ int main (int argc, char* const argv[])
 			diff[r][c] = max(abs(grey-last_grey) - 8, 0);
 
 			int delta_idx = max(diff[r][c], 0) / 10;
-			int idx = grey / 10;
-			//display[r][c] = spectrum[max(0, idx - delta_idx)];;
-			display[r][c] = spectrum[max(0, delta_idx)];
-			display[r][c] = spectrum[grey / 23];
-
 			if (delta_idx >= 1)
 			{
-				com_x += c;
-				com_y += r;
-				com_points++;
+				track.com.coord += (vec2_t){ c, r };
+				track.com.points++;
 			}
 		}
 
-		if (com_points > 3)// && frame_wait <= 0)
+		if (display_debug)
 		{
-			float last_targ_x = targ_x;
-			float last_targ_y = targ_y;
-			com_x /= com_points;
-			com_y /= com_points;
+			display_frame_to_chars(DS_H, DS_W, ds_frame, display);
+		}
+
+		if (track.com.points > 3)// && frame_wait <= 0)
+		{
+			tracking_t last_track = track;
+
+			track.com.coord /= (float)track.com.points;
 
 			{ // lpf on the target coordinate
 				const float power = 5;
 
-				if (targ_x == (DS_H >> 1) && targ_y == (DS_H >> 1))
+				if (track.target.coord[0] == (DS_H >> 1) && track.target.coord[1] == (DS_H >> 1))
 				{
-					targ_x = com_x;
-					targ_y = com_y;
+					track.target.coord = track.com.coord;
 				}
 
-				targ_x = (com_x + targ_x * (power - 1.f)) / power;
-				targ_y = (com_y + targ_y * (power - 1.f)) / power;		
+				track.target.coord = (track.com.coord + track.target.coord * (power - 1.f)) / power;
 			}
 
-			float dx = targ_x - last_targ_x, dy = targ_y - last_targ_y;
-			targ_dx = dx; targ_dy = dy;
-			float targ_com_dist = sqrt(pow(targ_x - com_x, 2.0) + pow(targ_y - com_y, 2.0));
+			track.target.delta = track.target.coord - last_track.target.coord;
+			float targ_com_dist = vec2_len(track.target.coord - track.com.coord);
 
 			// extract a feature from what's been marked as the target
-			if (frame_wait <= 0 && com_points < 200 && targ_com_dist < 3)
+			if (frame_wait <= 0 && track.com.points < 200 && targ_com_dist < 3)
 			{
 				frame_copy_uint8(
 					FEAT_SIZE, FEAT_SIZE,
 					feature,
 					DS_H, DS_W,
 					ds_frame,
-					(win_t){ com_y - FEAT_SIZE_H, com_x - FEAT_SIZE_H }
+					(win_t){ track.com.coord[1] - FEAT_SIZE_H, track.com.coord[0] - FEAT_SIZE_H }
 				);
 				feature_set = true;
 			}
@@ -207,7 +221,7 @@ int main (int argc, char* const argv[])
 		}
 		else
 		{
-			targ_dx = targ_dy = 0;
+			track.target.delta = (vec2_t){ 0, 0 };
 		}
 
 		match_t match = {
@@ -235,10 +249,9 @@ int main (int argc, char* const argv[])
 		int yaw = -((match.c + FEAT_SIZE_H) +  - (DS_W >> 1)) * cal.steps_per_col;
 		int pitch = -((match.r + FEAT_SIZE_H) - (DS_H >> 1)) * cal.steps_per_row;
 		int disp_yaw = yaw, disp_pitch = pitch;
-		//if (com_points > 0 && frame_wait <= 0)
 
 		float error = sqrt(yaw * yaw + pitch * pitch);
-		float delta = sqrt(targ_dx * targ_dx + targ_dy * targ_dy);
+		float delta = vec2_len(track.target.delta);
 
 		if (frame_wait <= 0 && error > 0 && delta < 2 && feature_set)
 		{
@@ -262,59 +275,10 @@ int main (int argc, char* const argv[])
 			motor_control_off();
 		}
 
+		if (display_debug)
 		{ // drawing markers for visualization
-			for (int i = 0; i < 2; i++)
-			for (int j = 0; j < 2; j++)
-			{
-				display[(int)targ_y+j][(int)targ_x+i] = '#';
-				display[DS_H >> 1][DS_W >> 1] = '+';
-				display[(int)com_y+j][(int)com_x+i] = '?';
-			}
-
-
-			if (match.score >= 0)
-			for (int i = 0; i < FEAT_SIZE; i++)
-			for (int j = 0; j < FEAT_SIZE_H; j++)
-			{
-				display[match.r+j][match.c+i] = '@';
-			}
+			display_debug_info_to_chars(DS_H, DS_W, track, match, yaw, pitch, frame_count, frame_wait, display);
 		}
-
-
-		if (rows_drawn > 0)
-		{ // Erase the previously drawn rows
-			static char move_up[16] = {};
-			sprintf(move_up, "\033[%dA", rows_drawn);
-			fprintf(stderr, "%s", move_up);
-			rows_drawn = 0;
-		}
-
-		if (now > last_sec)
-		{
-			fps = frame_count - last_sec_frames;
-			last_sec_frames = frame_count;
-			last_sec = now;
-		}
-
-		// display
-		if (frame_wait > 0) { fprintf(stderr, "\033[31m"); }
-		const int sf = 1; // scale factor
-		for (int r = 0; r < DS_H / sf; r++)
-		{
-			for (int c = 0; c < DS_W / (sf); c++)
-			{
-				fputc(display[r * sf][c * sf], stderr);
-			}
-			fputc('|', stderr);
-			fputc('\n', stderr);
-			rows_drawn += 1;
-		}
-		fprintf(stderr, "\033[0m");
-
-		printf("COM points: %d error %0.3f frame_wait: %d   \n", com_points, error, frame_wait);
-		printf("COM (%d, %d) targ∆: %0.3f, match_score: %0.3f \n", (int)targ_x, (int)targ_y, delta, match.score);
-		printf("yaw, pitch: (%d, %d) frames: %d fps: %d \n", disp_yaw, disp_pitch, frame_count, fps);
-		rows_drawn+=3;
 
 		if (frame_wait > 0) { frame_wait--; }
 		frame_count++;
@@ -322,6 +286,8 @@ int main (int argc, char* const argv[])
 	}
 
 	motor_control_off();
+	if (display_debug) { display_deinit(); }
+	printf("stopped\n");
 
 	return 0;
 }

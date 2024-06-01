@@ -1,5 +1,5 @@
 CC=avr-gcc
-TARGET=attiny84
+TARGET=attiny24
 CFLAGS+=-O1
 LDFLAGS+=-mmcu $(TARGET)
 

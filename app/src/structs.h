@@ -41,5 +41,30 @@ typedef struct {
 	float frames_per_step;
 } cal_t;
 
+// typedef union {
+// 	float v[2];
+// 	struct {
+// 		float x;
+// 		float y;
+// 	}
+// } vec2_t;
+
+typedef float vec2_t __attribute__ ((vector_size (8)));
+
+typedef struct {
+	struct {
+		vec2_t coord;
+		vec2_t delta;
+	} target;
+
+	struct {
+		vec2_t coord;
+		unsigned points;
+	} com;
+} tracking_t;
+
+typedef struct {
+
+} context_t;
 
 #endif
