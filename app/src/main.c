@@ -20,16 +20,9 @@
 #include "motor_control.h"
 #include "display.h"
 
-#define W (640)
-#define H (480)
-#define DS_W (128)
-#define DS_H (32)
-#define FEAT_SIZE 9
-#define FEAT_SIZE_H ((FEAT_SIZE - 1) >> 1)
-
 int spi_fd;
 bool running = true;
-bool motors_enabled = true;
+bool motors_enabled = false;
 bool display_debug = false;
 
 void wait_frame(vidi_cfg_t* cam, pixel_t frame[H][W])
@@ -87,7 +80,7 @@ int main (int argc, char* const argv[])
 	spi_fd = motor_control_init("/dev/spidev0.0");
 
 	int opt = 0;
-	while ((opt = getopt(argc, argv, "m:d")) > -1)
+	while ((opt = getopt(argc, argv, "m:dp:y:")) > -1)
 	{
 		switch(opt)
 		{
@@ -100,7 +93,33 @@ int main (int argc, char* const argv[])
 			{
 				display_debug = true;
 				display_init();
-			}
+			} break;
+			case 'p':
+			{
+				int steps = atoi(optarg);
+				int yaw_ticks, pitch_ticks;
+				while (steps != 0)
+				{
+					motor_control(0, steps, &yaw_ticks, &pitch_ticks);
+					steps -= pitch_ticks;				
+				}
+
+				printf("Pitching: %d steps\n", pitch_ticks);
+				running = false;
+			} break;
+			case 'y':
+			{
+				int steps = atoi(optarg);
+				int yaw_ticks, pitch_ticks;
+				while (steps != 0)
+				{
+					motor_control(0, steps, &yaw_ticks, &pitch_ticks);
+					steps -= yaw_ticks;					
+				}
+
+				printf("Pitching: %d steps\n", pitch_ticks);
+				running = false;
+			} break;
 		}
 	}
 
@@ -120,7 +139,6 @@ int main (int argc, char* const argv[])
 	
 	// debug display buffer
 	char display[DS_H][DS_W] = {};
-	int rows_drawn = 0;
 
 	// tracking
 	tracking_t track = {
@@ -164,6 +182,10 @@ int main (int argc, char* const argv[])
 
 		frame_mapping((point_t){DS_H, DS_W}, temp_ds_frame, ds_frame);
 
+		// TODO: instead of just computing the average of all
+		// changed pixels, it would be interesting to compute a
+		// k-means or something to find the single region which
+		// is most significant.
 		// compute center of motion
 		for (int r = 0; r < DS_H; r++)
 		for (int c = 0; c < DS_W; c++)
@@ -172,8 +194,8 @@ int main (int argc, char* const argv[])
 			int grey = ds_frame[r][c];
 			diff[r][c] = max(abs(grey-last_grey) - 8, 0);
 
-			int delta_idx = max(diff[r][c], 0) / 10;
-			if (delta_idx >= 1)
+			int delta = max(diff[r][c], 0);
+			if (delta >= 10)
 			{
 				track.com.coord += (vec2_t){ c, r };
 				track.com.points++;
@@ -191,6 +213,8 @@ int main (int argc, char* const argv[])
 
 			track.com.coord /= (float)track.com.points;
 
+			// TOOD: Instead of low passing the target coord, it would be much
+			// more interesting to use a dynamics predictive filter (KF) 
 			{ // lpf on the target coordinate
 				const float power = 5;
 
@@ -277,7 +301,15 @@ int main (int argc, char* const argv[])
 
 		if (display_debug)
 		{ // drawing markers for visualization
-			display_debug_info_to_chars(DS_H, DS_W, track, match, yaw, pitch, frame_count, frame_wait, display);
+			display_debug_info_to_chars(
+				DS_H, DS_W, 
+				track, 
+				match, 
+				yaw, pitch, 
+				frame_count, 
+				frame_wait, 
+				display
+			);
 		}
 
 		if (frame_wait > 0) { frame_wait--; }

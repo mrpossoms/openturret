@@ -1,8 +1,9 @@
 
 #include <stdio.h>
 #include <termios.h>
-#include <term.h>
+//#include <term.h>
 #include <unistd.h>
+#include <time.h>
 #include "display.h"
 #include "utils.h"
 

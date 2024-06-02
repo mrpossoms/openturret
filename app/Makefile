@@ -25,7 +25,7 @@ flash: bin/$(TARG)/tracker
 	scp $< $(USER)@$(HOSTNAME):~
 
 run: flash
-	ssh $(USER)@$(HOSTNAME) "./tracker /dev/video0"
+	ssh -t $(USER)@$(HOSTNAME) "./tracker /dev/video0 -d"
 
 .PHONY: clean flash run
 clean: 

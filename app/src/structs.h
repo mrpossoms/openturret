@@ -4,6 +4,15 @@
 #include <inttypes.h>
 #include <linux/types.h>
 #include <stdlib.h>
+#include <stdbool.h>
+
+#define W (640)
+#define H (480)
+#define DS_W (128)
+#define DS_H (32)
+#define FEAT_SIZE 9
+#define FEAT_SIZE_H ((FEAT_SIZE - 1) >> 1)
+#define T_LEN (3)
 
 typedef union {
 	struct {
@@ -64,7 +73,19 @@ typedef struct {
 } tracking_t;
 
 typedef struct {
+	uint8_t frame[DS_H][DS_W];
+	match_t match;
+	tracking_t tracker;
+	bool feature_set;
+} state_t;
 
+typedef struct {
+	state_t states[T_LEN];
+
+	struct {
+		int wait;
+		int count;
+	} frame;
 } context_t;
 
 #endif
