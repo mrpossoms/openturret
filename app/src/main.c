@@ -98,26 +98,28 @@ int main (int argc, char* const argv[])
 			{
 				int steps = atoi(optarg);
 				int yaw_ticks, pitch_ticks;
+				printf("Pitching: %d steps\n", steps);
 				while (steps != 0)
 				{
 					motor_control(0, steps, &yaw_ticks, &pitch_ticks);
 					steps -= pitch_ticks;				
 				}
-
-				printf("Pitching: %d steps\n", pitch_ticks);
+				sleep(1);
+				motor_control_off();
 				running = false;
 			} break;
 			case 'y':
 			{
 				int steps = atoi(optarg);
 				int yaw_ticks, pitch_ticks;
+				printf("Pitching: %d steps\n", steps);
 				while (steps != 0)
 				{
 					motor_control(0, steps, &yaw_ticks, &pitch_ticks);
 					steps -= yaw_ticks;					
 				}
-
-				printf("Pitching: %d steps\n", pitch_ticks);
+				sleep(1);
+				motor_control_off();
 				running = false;
 			} break;
 		}
@@ -128,59 +130,76 @@ int main (int argc, char* const argv[])
 
 	// frames
 	pixel_t frame[H][W] = {}; // raw frame from the camera
-	uint8_t diff[DS_H][DS_W] = {}; // down sampled grey difference between frames
-	uint8_t ds_frame[DS_H][DS_W] = {}; // down sampled grey frame
-	uint8_t ds_last_frame[DS_H][DS_W] = {}; // the last down sampled grey frame
-	
+	// uint8_t diff[DS_H][DS_W] = {}; // down sampled grey difference between frames
+	// uint8_t ds_frame[DS_H][DS_W] = {}; // down sampled grey frame
+	// uint8_t ds_last_frame[DS_H][DS_W] = {}; // the last down sampled grey frame
+	context_t ctx = {
+		.cal = calibrate(&cam, spi_fd),
+	};
+
 	// features
-	match_t last_match = {};
-	uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
-	bool feature_set = false;
+	// match_t last_match = {};
+	// uint8_t feature[FEAT_SIZE][FEAT_SIZE] = {};
+	// bool feature_set = false;
 	
+
+
 	// debug display buffer
 	char display[DS_H][DS_W] = {};
 
 	// tracking
-	tracking_t track = {
-		.target = {
-			.coord = { DS_W >> 1, DS_H >> 1 },
-			.delta = { 0, 0 },
-		},
-		.com = {
-			.coord = { DS_W >> 1, DS_H >> 1 },
-			.points = 0,
-		}
-	};
+	// tracking_t track = {
+	// 	.target = {
+	// 		.coord = { DS_W >> 1, DS_H >> 1 },
+	// 		.delta = { 0, 0 },
+	// 	},
+	// 	.com = {
+	// 		.coord = { DS_W >> 1, DS_H >> 1 },
+	// 		.points = 0,
+	// 	}
+	// };
+	for (unsigned i = 0; i < T_LEN; i++)
+	{
+		ctx.states[i].tracker = (tracking_t){
+			.target = {
+				.coord = { DS_W >> 1, DS_H >> 1 },				
+			},
+		};
+	}
 	
-	int frame_wait = 4;
-	int frame_count = 0;
-	mapping_t frame_mapping = frame_mapping_1to1;
+	// int frame_wait = 4;
+	// int frame_count = 0;
 
-	cal_t cal = calibrate(&cam, spi_fd);
+	// mapping_t frame_mapping = frame_mapping_1to1;
+
+	// cal_t cal = calibrate(&cam, spi_fd);
 	motor_control_off();
-	fprintf(stderr, "steps_per_row: %f, steps_per_col: %f\n", cal.steps_per_row, cal.steps_per_col);
+	fprintf(stderr, "steps_per_row: %f, steps_per_col: %f\n", ctx.cal.steps_per_row, ctx.cal.steps_per_col);
 
 	vidi_request_frame(&cam);
 
 
 	while (running)
 	{
+		unsigned f = ctx.frame.count;
+		state_t* x_t_1 = ctx.states + ((f - 1) % T_LEN); 
+		state_t* x_t = ctx.states + (f % T_LEN);
 		wait_frame(&cam, frame);
 
 		// request the camera to capture a frame
 		vidi_request_frame(&cam);
 
 
-		track.com.coord = (vec2_t){};
-		track.com.points = 0;
+		x_t->tracker.com.coord = (vec2_t){};
+		x_t->tracker.com.points = 0;
 
 		// down sample frame
-		uint8_t temp_ds_frame[DS_H][DS_W];
+		// uint8_t temp_ds_frame[DS_H][DS_W];
 		frame_downsample_uint8(
-			(point_t) { DS_H, DS_W }, temp_ds_frame,
+			(point_t) { DS_H, DS_W }, x_t->frame,
 			(point_t) { H, W }, frame);
 
-		frame_mapping((point_t){DS_H, DS_W}, temp_ds_frame, ds_frame);
+		// frame_mapping((point_t){DS_H, DS_W}, temp_ds_frame, ds_frame);
 
 		// TODO: instead of just computing the average of all
 		// changed pixels, it would be interesting to compute a
@@ -190,94 +209,93 @@ int main (int argc, char* const argv[])
 		for (int r = 0; r < DS_H; r++)
 		for (int c = 0; c < DS_W; c++)
 		{
-			int last_grey = ds_last_frame[r][c];
-			int grey = ds_frame[r][c];
-			diff[r][c] = max(abs(grey-last_grey) - 8, 0);
+			int last_grey = x_t_1->frame[r][c];
+			int grey = x_t->frame[r][c];
+			// diff[r][c] = max(abs(grey-last_grey) - 8, 0);
 
-			int delta = max(diff[r][c], 0);
+			// int delta = max(diff[r][c], 0);
+			int delta = max(abs(grey-last_grey) - 8, 0);
 			if (delta >= 10)
 			{
-				track.com.coord += (vec2_t){ c, r };
-				track.com.points++;
+				x_t->tracker.com.coord += (vec2_t){ c, r };
+				x_t->tracker.com.points++;
 			}
 		}
 
 		if (display_debug)
 		{
-			display_frame_to_chars(DS_H, DS_W, ds_frame, display);
+			display_frame_to_chars(DS_H, DS_W, x_t->frame, display);
 		}
 
-		if (track.com.points > 3)// && frame_wait <= 0)
+		if (x_t->tracker.com.points > 3)// && frame_wait <= 0)
 		{
-			tracking_t last_track = track;
-
-			track.com.coord /= (float)track.com.points;
+			x_t->tracker.com.coord /= (float)x_t->tracker.com.points;
 
 			// TOOD: Instead of low passing the target coord, it would be much
 			// more interesting to use a dynamics predictive filter (KF) 
 			{ // lpf on the target coordinate
 				const float power = 5;
 
-				if (track.target.coord[0] == (DS_H >> 1) && track.target.coord[1] == (DS_H >> 1))
+				if (x_t->tracker.target.coord[0] == (DS_H >> 1) && x_t->tracker.target.coord[1] == (DS_H >> 1))
 				{
-					track.target.coord = track.com.coord;
+					x_t->tracker.target.coord = x_t->tracker.com.coord;
 				}
 
-				track.target.coord = (track.com.coord + track.target.coord * (power - 1.f)) / power;
+				x_t->tracker.target.coord = (x_t->tracker.com.coord + x_t->tracker.target.coord * (power - 1.f)) / power;
 			}
 
-			track.target.delta = track.target.coord - last_track.target.coord;
-			float targ_com_dist = vec2_len(track.target.coord - track.com.coord);
+			x_t->tracker.target.delta = x_t->tracker.target.coord - x_t_1->tracker.target.coord;
+			float targ_com_dist = vec2_len(x_t->tracker.target.coord - x_t->tracker.com.coord);
 
 			// extract a feature from what's been marked as the target
-			if (frame_wait <= 0 && track.com.points < 200 && targ_com_dist < 3)
+			if (ctx.frame.wait <= 0 && x_t->tracker.com.points < 200 && targ_com_dist < 3)
 			{
 				frame_copy_uint8(
 					FEAT_SIZE, FEAT_SIZE,
-					feature,
+					x_t->feature,
 					DS_H, DS_W,
-					ds_frame,
-					(win_t){ track.com.coord[1] - FEAT_SIZE_H, track.com.coord[0] - FEAT_SIZE_H }
+					x_t->frame,
+					(win_t){ x_t->tracker.com.coord[1] - FEAT_SIZE_H, x_t->tracker.com.coord[0] - FEAT_SIZE_H }
 				);
-				feature_set = true;
+				x_t->feature_set = true;
 			}
 
 		}
 		else
 		{
-			track.target.delta = (vec2_t){ 0, 0 };
+			x_t->tracker.target.delta = (vec2_t){ 0, 0 };
 		}
 
-		match_t match = {
-			.score = -1,	
-		};
+		// match_t match = {
+		// 	.score = -1,	
+		// };
 
-		if (feature_set)
+		if (x_t->feature_set)
 		{
-			match = match_feature(
-				(point_t){ DS_H, DS_W }, ds_frame,
-				(point_t){ FEAT_SIZE, FEAT_SIZE }, feature,
+			x_t->match = match_feature(
+				(point_t){ DS_H, DS_W }, x_t->frame,
+				(point_t){ FEAT_SIZE, FEAT_SIZE }, x_t->feature,
 				(win_t) {{}, { DS_H, DS_W }}
 			);
 
-			int dr = match.r - last_match.r, dc = match.c - last_match.c;
+			int dr = x_t->match.r - x_t_1->match.r, dc = x_t->match.c - x_t_1->match.c;
 			if (sqrtf(dr * dr + dc * dc) > 10)
 			{
-				match.score = -1;	
-				feature_set = false;
+				x_t->match.score = -1;	
+				x_t->feature_set = false;
 			}
 
-			last_match = match;
+			// last_match = match;
 		}
 
-		int yaw = -((match.c + FEAT_SIZE_H) +  - (DS_W >> 1)) * cal.steps_per_col;
-		int pitch = -((match.r + FEAT_SIZE_H) - (DS_H >> 1)) * cal.steps_per_row;
+		int yaw = -((x_t->match.c + FEAT_SIZE_H) +  - (DS_W >> 1)) * ctx.cal.steps_per_col;
+		int pitch = -((x_t->match.r + FEAT_SIZE_H) - (DS_H >> 1)) * ctx.cal.steps_per_row;
 		int disp_yaw = yaw, disp_pitch = pitch;
 
 		float error = sqrt(yaw * yaw + pitch * pitch);
-		float delta = vec2_len(track.target.delta);
+		float delta = vec2_len(x_t->tracker.target.delta);
 
-		if (frame_wait <= 0 && error > 0 && delta < 2 && feature_set)
+		if (ctx.frame.wait <= 0 && error > 0 && delta < 2 && x_t->feature_set)
 		{
 			do
 			{
@@ -287,7 +305,7 @@ int main (int argc, char* const argv[])
 					motor_control(yaw, pitch, &yaw_ticks, &pitch_ticks);
 				}
 
-				frame_wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * cal.frames_per_step * 1;
+				ctx.frame.wait += sqrt(pitch_ticks * pitch_ticks + yaw_ticks * yaw_ticks) * ctx.cal.frames_per_step * 1;
 				yaw -= yaw_ticks;
 				pitch -= pitch_ticks;
 			}
@@ -303,18 +321,18 @@ int main (int argc, char* const argv[])
 		{ // drawing markers for visualization
 			display_debug_info_to_chars(
 				DS_H, DS_W, 
-				track, 
-				match, 
+				x_t->tracker, 
+				x_t->match, 
 				yaw, pitch, 
-				frame_count, 
-				frame_wait, 
+				ctx.frame.count, 
+				ctx.frame.wait, 
 				display
 			);
 		}
 
-		if (frame_wait > 0) { frame_wait--; }
-		frame_count++;
-		memcpy(ds_last_frame, ds_frame, sizeof(ds_last_frame));
+		if (ctx.frame.wait > 0) { ctx.frame.wait--; }
+		ctx.frame.count++;
+		// memcpy(ds_last_frame, ds_frame, sizeof(ds_last_frame));
 	}
 
 	motor_control_off();

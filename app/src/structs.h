@@ -74,6 +74,7 @@ typedef struct {
 
 typedef struct {
 	uint8_t frame[DS_H][DS_W];
+	uint8_t feature[FEAT_SIZE][FEAT_SIZE];
 	match_t match;
 	tracking_t tracker;
 	bool feature_set;
@@ -86,6 +87,8 @@ typedef struct {
 		int wait;
 		int count;
 	} frame;
+
+	cal_t cal;
 } context_t;
 
 #endif
